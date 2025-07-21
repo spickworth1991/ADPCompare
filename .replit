@@ -1,1 +1,10 @@
-run = "npm install && npm run dev"
+run = "npm run dev"
+language = "nodejs"
+entrypoint = "index.js"
+
+[nix]
+channel = "stable-23_05"
+
+[[ports]]
+localPort = 3000
+externalPort = 80

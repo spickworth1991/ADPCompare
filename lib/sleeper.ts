@@ -4,9 +4,11 @@ import axios from 'axios';
 export async function getUserLeagues(username: string): Promise<any[]> {
   const userRes = await axios.get(`https://api.sleeper.app/v1/user/${username}`);
   const userId = userRes.data.user_id;
+  const currentYear = new Date().getFullYear();
   const leaguesRes = await axios.get(
-    `https://api.sleeper.app/v1/user/${userId}/leagues/nfl/2024`
+    `https://api.sleeper.app/v1/user/${userId}/leagues/nfl/${currentYear}`
   );
+
   return leaguesRes.data;
 }
 
