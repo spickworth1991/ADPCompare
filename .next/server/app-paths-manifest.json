@@ -1,5 +1,6 @@
 {
   "/page": "app/page.js",
   "/select-leagues/page": "app/select-leagues/page.js",
-  "/compare/page": "app/compare/page.js"
+  "/compare/page": "app/compare/page.js",
+  "/api/leagues/route": "app/api/leagues/route.js"
 }

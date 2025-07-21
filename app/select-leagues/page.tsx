@@ -1,6 +1,8 @@
+//select-leagues/page.tsx
 'use client';
 import { useEffect, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
+
 import {
   DragDropContext,
   Droppable,
@@ -13,6 +15,7 @@ import axios from 'axios';
 type League = { league_id: string; name: string };
 
 export default function SelectLeagues() {
+  const [leagueSize, setLeagueSize] = useState(12);
   const [leagues, setLeagues] = useState<League[]>([]);
   const [sideA, setSideA] = useState<League[]>([]);
   const [sideB, setSideB] = useState<League[]>([]);
@@ -74,6 +77,7 @@ export default function SelectLeagues() {
       a: sideA.map((l) => l.league_id).join(','),
       b: sideB.map((l) => l.league_id).join(','),
       username: username || '',
+      size: leagueSize.toString(),
     }).toString();
     router.push(`/compare?${query}`);
   };
@@ -81,6 +85,19 @@ export default function SelectLeagues() {
   return (
     <div className="min-h-screen p-4 bg-gray-50">
       <h1 className="text-2xl font-bold mb-6 text-center">Drag & Drop Leagues</h1>
+      <div className="text-center mb-4">
+        <label className="mr-2 font-medium">League Size:</label>
+        <select
+          className="border rounded px-2 py-1"
+          value={leagueSize}
+          onChange={(e) => setLeagueSize(Number(e.target.value))}
+        >
+          {[8, 10, 12, 14, 16].map((size) => (
+            <option key={size} value={size}>{size}</option>
+          ))}
+        </select>
+      </div>
+
       {loading ? (
         <p className="text-center">Loading leagues for {username}...</p>
       ) : (
