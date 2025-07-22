@@ -156,7 +156,6 @@ export default function SelectLeagues() {
       <div className="text-center mt-8">
         <button
           onClick={handleCompare}
-          disabled={sideA.length === 0 || sideB.length === 0}
           className="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700 disabled:bg-gray-400"
         >
           Compare ADPs

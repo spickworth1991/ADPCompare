@@ -12,8 +12,9 @@ export type PlayerResult = {
 type PlayerADP = {
   name: string;
   position: string;
-  totalPick: number;
+  totalPick: number; // for internal use
   count: number;
+  avg: number;
 };
 
 function calcAverageADP(picks: any[], numTeams: number): Record<string, PlayerADP> {
@@ -28,7 +29,7 @@ function calcAverageADP(picks: any[], numTeams: number): Record<string, PlayerAD
 
     const round = Math.floor((pickNo - 1) / numTeams) + 1;
     const pickInRound = (pickNo - 1) % numTeams + 1;
-    const decimalPick = parseFloat(`${round}.${pickInRound.toString().padStart(2, '0')}`);
+    const overallPick = pickNo; 
 
     if (!data[fullName]) {
       data[fullName] = {
@@ -36,23 +37,28 @@ function calcAverageADP(picks: any[], numTeams: number): Record<string, PlayerAD
         position,
         totalPick: 0,
         count: 0,
+        avg: 0,
       };
     }
 
-    data[fullName].totalPick += decimalPick;
+    data[fullName].totalPick += overallPick;
     data[fullName].count += 1;
+  }
+
+  for (const name in data) {
+    const entry = data[name];
+    entry.avg = parseFloat((entry.totalPick / entry.count).toFixed(2));
   }
 
   return data;
 }
 
-export async function getADPMap(leagueIds: string[]): Promise<Record<string, PlayerADP>> {
+export async function getADPMap(leagueIds: string[], leagueSize: number): Promise<Record<string, PlayerADP>> {
   const adpMap: Record<string, PlayerADP> = {};
 
   for (const id of leagueIds) {
     const picks = await getDraftPicks(id);
-    const numTeams = picks.length > 0 ? picks[0]?.draft_slot || 12 : 12;
-    const leagueADP = calcAverageADP(picks, numTeams);
+    const leagueADP = calcAverageADP(picks, leagueSize);
 
     for (const name in leagueADP) {
       if (!adpMap[name]) {
@@ -61,6 +67,7 @@ export async function getADPMap(leagueIds: string[]): Promise<Record<string, Pla
           position: leagueADP[name].position,
           totalPick: 0,
           count: 0,
+          avg: 0,
         };
       }
 
@@ -69,9 +76,9 @@ export async function getADPMap(leagueIds: string[]): Promise<Record<string, Pla
     }
   }
 
-  // convert to average
   for (const name in adpMap) {
-    adpMap[name].totalPick = parseFloat((adpMap[name].totalPick / adpMap[name].count).toFixed(2));
+    const entry = adpMap[name];
+    entry.avg = parseFloat((entry.totalPick / entry.count).toFixed(2));
   }
 
   return adpMap;
@@ -91,8 +98,8 @@ export function compareADPs(
     const result: PlayerResult = {
       name: name,
       position: a?.position || b?.position || '-',
-      adpA: a?.totalPick ?? null,
-      adpB: b?.totalPick ?? null,
+      adpA: a?.avg ?? null,
+      adpB: b?.avg ?? null,
       delta: null,
     };
 

@@ -14,7 +14,9 @@ export async function getUserLeagues(username: string): Promise<any[]> {
 
 export async function getDraftPicks(leagueId: string) {
   const draftRes = await axios.get(`https://api.sleeper.app/v1/league/${leagueId}/drafts`);
-  const draftId = draftRes.data[0]?.draft_id;
+  if (!Array.isArray(draftRes.data) || draftRes.data.length === 0) return [];
+  const draftId = draftRes.data[0].draft_id;
+
   if (!draftId) return [];
   const picksRes = await axios.get(`https://api.sleeper.app/v1/draft/${draftId}/picks`);
   return picksRes.data;
