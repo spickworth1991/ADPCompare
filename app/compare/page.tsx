@@ -11,6 +11,7 @@ export default function ComparePage() {
   const [sortKey, setSortKey] = useState<SortKey>('adpA');
   const [sortAsc, setSortAsc] = useState(true);
   const [positionFilter, setPositionFilter] = useState('All');
+  const [searchTerm, setSearchTerm] = useState('');
   const [page, setPage] = useState(0);
   const pageSize = 50;
 
@@ -47,18 +48,20 @@ export default function ComparePage() {
     return `${round}.${pickInRound.toString().padStart(2, '0')}`;
   };
 
-  const topFallers = [...results]
+  const topRisers = [...results]
     .filter((r) => r.delta !== null && r.delta < 0)
     .sort((a, b) => a.delta! - b.delta!)
     .slice(0, 10);
 
-  const topRisers = [...results]
+  const topFallers = [...results]
     .filter((r) => r.delta !== null && r.delta > 0)
     .sort((a, b) => b.delta! - a.delta!)
     .slice(0, 10);
 
   const filtered = results.filter(
-    (r) => positionFilter === 'All' || r.position === positionFilter
+    (r) =>
+      (positionFilter === 'All' || r.position === positionFilter) &&
+      r.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const sorted = [...filtered].sort((a, b) => {
@@ -76,37 +79,75 @@ export default function ComparePage() {
   const totalPages = Math.ceil(sorted.length / pageSize);
   const paginated = sorted.slice(page * pageSize, (page + 1) * pageSize);
 
-  const renderTable = (items: PlayerResult[], title: string) => (
+  const renderTable = (items: PlayerResult[], title: string, isFull: boolean = false) => (
     <div className="mt-8">
       <h2 className="text-xl font-bold mb-2 text-center">{title}</h2>
+      {isFull && (
+        <div className="flex justify-between items-center mb-4 gap-4 flex-wrap">
+          <input
+            type="text"
+            placeholder="Search by name..."
+            value={searchTerm}
+            onChange={(e) => {
+              setSearchTerm(e.target.value);
+              setPage(0);
+            }}
+            className="border px-3 py-1 rounded w-full max-w-xs"
+          />
+          <select
+            value={positionFilter}
+            onChange={(e) => {
+              setPositionFilter(e.target.value);
+              setPage(0);
+            }}
+            className="border px-2 py-1 text-sm rounded"
+          >
+            <option value="All">All Positions</option>
+            <option value="QB">QB</option>
+            <option value="RB">RB</option>
+            <option value="WR">WR</option>
+            <option value="TE">TE</option>
+            <option value="K">K</option>
+            <option value="DEF">DEF</option>
+          </select>
+        </div>
+      )}
+
       <div className="overflow-x-auto">
         <table className="w-full bg-white shadow rounded text-sm text-left">
           <thead className="bg-blue-100">
             <tr>
-              <th className="cursor-pointer p-2" onClick={() => toggleSort('name')}>Player</th>
-              <th className="p-2">
-                <select
-                  value={positionFilter}
-                  onChange={(e) => {
-                    setPositionFilter(e.target.value);
-                    setPage(0);
-                  }}
-                  className="border px-2 py-1 text-sm rounded"
-                >
-                  <option value="All">Pos</option>
-                  <option value="QB">QB</option>
-                  <option value="RB">RB</option>
-                  <option value="WR">WR</option>
-                  <option value="TE">TE</option>
-                  <option value="K">K</option>
-                  <option value="DEF">DEF</option>
-                </select>
+              <th className="p-2 cursor-pointer" onClick={() => isFull && toggleSort('name')}>
+                Player {isFull && sortKey === 'name' && (sortAsc ? '↑' : '↓')}
               </th>
-              <th className="cursor-pointer p-2 text-center" onClick={() => toggleSort('adpA')}>Side A</th>
-              <th className="cursor-pointer p-2 text-center" onClick={() => toggleSort('adpB')}>Side B</th>
-              <th className="p-2 text-center">A Rnd.Pick</th>
-              <th className="p-2 text-center">B Rnd.Pick</th>
-              <th className="cursor-pointer p-2 text-center" onClick={() => toggleSort('delta')}>Change</th>
+              <th
+                className="p-2 cursor-pointer"
+                onClick={() => isFull && toggleSort('position')}
+              >
+                Pos {isFull && sortKey === 'position' && (sortAsc ? '↑' : '↓')}
+              </th>
+              <th className="p-2 cursor-pointer text-center" onClick={() => isFull && toggleSort('adpA')}>
+                Side A {isFull && sortKey === 'adpA' && (sortAsc ? '↑' : '↓')}
+              </th>
+              <th className="p-2 cursor-pointer text-center" onClick={() => isFull && toggleSort('adpB')}>
+                Side B {isFull && sortKey === 'adpB' && (sortAsc ? '↑' : '↓')}
+              </th>
+              <th
+                className="p-2 cursor-pointer text-center"
+                onClick={() => isFull && toggleSort('adpA')}
+              >
+                A Rnd.Pick {isFull && sortKey === 'adpA' && (sortAsc ? '↑' : '↓')}
+              </th>
+              <th
+                className="p-2 cursor-pointer text-center"
+                onClick={() => isFull && toggleSort('adpB')}
+              >
+                B Rnd.Pick {isFull && sortKey === 'adpB' && (sortAsc ? '↑' : '↓')}
+              </th>
+
+              <th className="p-2 cursor-pointer text-center" onClick={() => isFull && toggleSort('delta')}>
+                Change {isFull && sortKey === 'delta' && (sortAsc ? '↑' : '↓')}
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -125,8 +166,8 @@ export default function ComparePage() {
                 >
                   {r.delta !== null
                     ? r.delta > 0
-                      ? `⬆️ ${r.delta}`
-                      : `⬇️ ${Math.abs(r.delta)}`
+                      ? `⬇️ ${r.delta}`
+                      : `⬆️ ${Math.abs(r.delta)}`
                     : '-'}
                 </td>
               </tr>
@@ -144,9 +185,9 @@ export default function ComparePage() {
         <p className="text-center">Calculating...</p>
       ) : (
         <>
-          {renderTable(topFallers, '📉 Top 10 Fallers')}
           {renderTable(topRisers, '📈 Top 10 Risers')}
-          {renderTable(paginated, 'Full Results')}
+          {renderTable(topFallers, '📉 Top 10 Fallers')}
+          {renderTable(paginated, 'Full Results', true)}
 
           {totalPages > 1 && (
             <div className="flex justify-center mt-6 space-x-2">

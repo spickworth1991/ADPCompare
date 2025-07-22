@@ -1,15 +1,6 @@
-//select-leagues/page.tsx
 'use client';
 import { useEffect, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-
-import {
-  DragDropContext,
-  Droppable,
-  Draggable,
-  type DropResult,
-} from '@hello-pangea/dnd';
-
 import axios from 'axios';
 
 type League = { league_id: string; name: string };
@@ -17,8 +8,8 @@ type League = { league_id: string; name: string };
 export default function SelectLeagues() {
   const [leagueSize, setLeagueSize] = useState(12);
   const [leagues, setLeagues] = useState<League[]>([]);
-  const [sideA, setSideA] = useState<League[]>([]);
-  const [sideB, setSideB] = useState<League[]>([]);
+  const [sideA, setSideA] = useState<string[]>([]);
+  const [sideB, setSideB] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -37,56 +28,43 @@ export default function SelectLeagues() {
     fetchLeagues();
   }, [username]);
 
-  const getList = (id: string) => {
-    if (id === 'all') return leagues;
-    if (id === 'a') return sideA;
-    if (id === 'b') return sideB;
-    return [];
+  const handleToggle = (leagueId: string, side: 'A' | 'B') => {
+    if (side === 'A') {
+      setSideA((prev) =>
+        prev.includes(leagueId) ? prev.filter((id) => id !== leagueId) : [...prev, leagueId]
+      );
+      setSideB((prev) => prev.filter((id) => id !== leagueId));
+    } else {
+      setSideB((prev) =>
+        prev.includes(leagueId) ? prev.filter((id) => id !== leagueId) : [...prev, leagueId]
+      );
+      setSideA((prev) => prev.filter((id) => id !== leagueId));
+    }
   };
 
-  const updateList = (id: string, newList: League[]) => {
-    if (id === 'all') setLeagues([...newList]);
-    if (id === 'a') setSideA([...newList]);
-    if (id === 'b') setSideB([...newList]);
+  const handleClear = () => {
+    setSideA([]);
+    setSideB([]);
   };
-
-  const handleDrag = (result: DropResult) => {
-  if (!result.destination) return;
-
-  const sourceId = result.source.droppableId;
-  const destId = result.destination.droppableId;
-
-  if (sourceId === destId) {
-    const items = Array.from(getList(sourceId));
-    const [moved] = items.splice(result.source.index, 1);
-    items.splice(result.destination.index, 0, moved);
-    updateList(sourceId, items);
-  } else {
-    const sourceItems = Array.from(getList(sourceId));
-    const destItems = Array.from(getList(destId));
-    const [moved] = sourceItems.splice(result.source.index, 1);
-    destItems.splice(result.destination.index, 0, moved);
-    updateList(sourceId, sourceItems);
-    updateList(destId, destItems);
-  }
-};
-
 
   const handleCompare = () => {
     const query = new URLSearchParams({
-      a: sideA.map((l) => l.league_id).join(','),
-      b: sideB.map((l) => l.league_id).join(','),
+      a: sideA.join(','),
+      b: sideB.join(','),
       username: username || '',
       size: leagueSize.toString(),
     }).toString();
     router.push(`/compare?${query}`);
   };
 
+  const getLeagueName = (id: string) => leagues.find((l) => l.league_id === id)?.name || 'Unknown';
+
   return (
-    <div className="min-h-screen p-4 bg-gray-50">
-      <h1 className="text-2xl font-bold mb-6 text-center">Drag & Drop Leagues</h1>
-      <div className="text-center mb-4">
-        <label className="mr-2 font-medium">League Size:</label>
+    <div className="min-h-screen p-6 bg-gray-50">
+      <h1 className="text-3xl font-bold mb-6 text-center">Select Leagues</h1>
+
+      <div className="text-center mb-6">
+        <label className="mr-2 font-semibold">League Size:</label>
         <select
           className="border rounded px-2 py-1"
           value={leagueSize}
@@ -96,63 +74,94 @@ export default function SelectLeagues() {
             <option key={size} value={size}>{size}</option>
           ))}
         </select>
+        <button
+          onClick={handleClear}
+          className="ml-6 px-4 py-1 bg-red-600 text-white rounded hover:bg-red-700"
+        >
+          Clear Selections
+        </button>
       </div>
 
       {loading ? (
         <p className="text-center">Loading leagues for {username}...</p>
       ) : (
-        <>
-          <DragDropContext onDragEnd={handleDrag}>
-            <div className="grid grid-cols-3 gap-4">
-              {[
-                { id: 'all', title: 'All Leagues', data: leagues },
-                { id: 'a', title: 'Side A', data: sideA },
-                { id: 'b', title: 'Side B', data: sideB }
-              ].map(({ id, title, data }) => (
-                <Droppable droppableId={id} key={id}>
-                  {(provided) => (
-                    <div
-                      className="bg-white rounded p-4 shadow min-h-[300px]"
-                      ref={provided.innerRef}
-                      {...provided.droppableProps}
-                    >
-                      <h2 className="font-semibold mb-2">{title}</h2>
-                      {data.map((league, index) => (
-                        <Draggable
-                          key={league.league_id}
-                          draggableId={league.league_id.toString()}
-                          index={index}
-                        >
-                          {(provided) => (
-                            <div
-                              className="bg-blue-100 rounded p-2 mb-2"
-                              ref={provided.innerRef}
-                              {...provided.draggableProps}
-                              {...provided.dragHandleProps}
-                            >
-                              {league.name}
-                            </div>
-                          )}
-                        </Draggable>
-                      ))}
-                      {provided.placeholder}
-                    </div>
-                  )}
-                </Droppable>
-              ))}
-            </div>
-          </DragDropContext>
-          <div className="text-center mt-6">
-            <button
-              onClick={handleCompare}
-              disabled={sideA.length === 0 || sideB.length === 0}
-              className="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700 disabled:bg-gray-400"
-            >
-              Compare ADPs
-            </button>
+        <div className="flex flex-col md:flex-row gap-4 max-w-7xl mx-auto">
+          {/* Side A */}
+          <div className="w-full md:w-1/3 bg-green-100 p-4 rounded shadow">
+            <h2 className="text-xl font-bold mb-3 text-center">Side A (earlier seasons)</h2>
+            {sideA.map((id) => (
+              <div
+                key={id}
+                className="bg-white p-2 rounded shadow mb-2 transition-all duration-200"
+              >
+                {getLeagueName(id)}
+              </div>
+            ))}
           </div>
-        </>
+
+          {/* All leagues */}
+          <div className="w-full md:w-1/3 bg-white p-4 rounded shadow border max-h-[80vh] overflow-y-auto">
+            <h2 className="text-xl font-bold mb-3 text-center">All Leagues</h2>
+            {leagues.map((league) => {
+              const isA = sideA.includes(league.league_id);
+              const isB = sideB.includes(league.league_id);
+              const dim = isA || isB;
+
+              return (
+                <div
+                  key={league.league_id}
+                  className={`flex justify-between items-center p-2 border-b transition-all duration-150 ${
+                    dim ? 'opacity-60' : ''
+                  }`}
+                >
+                  <span className="text-sm font-medium">{league.name}</span>
+                  <div className="flex gap-2">
+                    <label className="flex items-center gap-1 text-green-700 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={isA}
+                        onChange={() => handleToggle(league.league_id, 'A')}
+                      />
+                      A
+                    </label>
+                    <label className="flex items-center gap-1 text-blue-700 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={isB}
+                        onChange={() => handleToggle(league.league_id, 'B')}
+                      />
+                      B
+                    </label>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Side B */}
+          <div className="w-full md:w-1/3 bg-blue-100 p-4 rounded shadow">
+            <h2 className="text-xl font-bold mb-3 text-center">Side B</h2>
+            {sideB.map((id) => (
+              <div
+                key={id}
+                className="bg-white p-2 rounded shadow mb-2 transition-all duration-200"
+              >
+                {getLeagueName(id)}
+              </div>
+            ))}
+          </div>
+        </div>
       )}
+
+      <div className="text-center mt-8">
+        <button
+          onClick={handleCompare}
+          disabled={sideA.length === 0 || sideB.length === 0}
+          className="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700 disabled:bg-gray-400"
+        >
+          Compare ADPs
+        </button>
+      </div>
     </div>
   );
 }
