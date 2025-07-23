@@ -129,7 +129,7 @@ export default function ComparePage() {
   }
 
   return (
-    <div className="mt-8 px-4 w-full max-w-screen-xl mx-auto relative overflow-x-hidden">
+    <div className="mt-8 px-4 w-full mx-auto relative overflow-visible">
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-xl font-bold text-center">🧾 Draft Board View</h2>
         <button
