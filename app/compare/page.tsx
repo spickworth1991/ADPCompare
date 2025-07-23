@@ -129,7 +129,7 @@ export default function ComparePage() {
   }
 
   return (
-    <div className="mt-8 px-4 w-full mx-auto relative overflow-visible">
+    <div className="mt-8 w-full flex justify-center relative overflow-visible">
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-xl font-bold text-center">🧾 Draft Board View</h2>
         <button
@@ -183,13 +183,14 @@ export default function ComparePage() {
 
               {/* Grid row */}
               <div
-                className="grid gap-1 mx-auto"
+                className="grid gap-1"
                 style={{
-                  maxWidth: '1400px', // adjust to taste
-                  gridTemplateColumns: `repeat(${leagueSize}, minmax(120px, 1fr))`,
                   display: 'grid',
+                  gridTemplateColumns: `repeat(${leagueSize}, minmax(120px, 1fr))`,
+                  maxWidth: `${leagueSize * 130}px`, // ~130px per column, adjust as needed
                 }}
               >
+
 
                 {displayRow.map((r, iInRow) => {
                   const truePick =
