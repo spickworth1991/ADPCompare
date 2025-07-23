@@ -129,7 +129,7 @@ export default function ComparePage() {
   }
 
   return (
-    <div className="mt-8 px-4 max-w-[95%] mx-auto relative">
+    <div className="mt-8 px-4 w-full max-w-screen-xl mx-auto relative overflow-x-hidden">
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-xl font-bold text-center">🧾 Draft Board View</h2>
         <button
@@ -325,6 +325,21 @@ export default function ComparePage() {
 
   return (
     <div className="p-4 min-h-screen bg-gray-50">
+      <div className="flex justify-between items-center mb-4">
+        <button
+          onClick={() => window.location.href = '/'}
+          className="bg-gray-600 text-white px-4 py-1 rounded text-sm"
+        >
+          ⬅ Home
+        </button>
+        <button
+          onClick={() => window.location.href = '/select'}
+          className="bg-gray-600 text-white px-4 py-1 rounded text-sm"
+        >
+          🗂 League Selection
+        </button>
+      </div>
+
       <h1 className="text-2xl font-bold mb-4 text-center">
         {mode === 'compare'
           ? 'ADP Comparison'
@@ -334,6 +349,7 @@ export default function ComparePage() {
           ? 'ADP List (Side B)'
           : 'No Leagues Selected'}
       </h1>
+      
 
       {loading ? (
         <p className="text-center">Loading...</p>
