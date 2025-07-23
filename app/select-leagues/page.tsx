@@ -6,7 +6,7 @@ import axios from 'axios';
 type League = { league_id: string; name: string };
 
 export default function SelectLeagues() {
-  const [leagueSize, setLeagueSize] = useState(12);
+  const [leagueSize, setLeagueSize] = useState(10);
   const [leagues, setLeagues] = useState<League[]>([]);
   const [sideA, setSideA] = useState<string[]>([]);
   const [sideB, setSideB] = useState<string[]>([]);

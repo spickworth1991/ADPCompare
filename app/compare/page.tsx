@@ -20,7 +20,7 @@ export default function ComparePage() {
   const searchParams = useSearchParams();
   const a = searchParams.get('a')?.split(',').filter(Boolean) || [];
   const b = searchParams.get('b')?.split(',').filter(Boolean) || [];
-  const leagueSize = parseInt(searchParams.get('size') || '12', 10);
+  const leagueSize = parseInt(searchParams.get('size') || '10', 10);
   const [refsReady, setRefsReady] = useState(false);
 
 
@@ -77,13 +77,15 @@ export default function ComparePage() {
       if (mode === 'full-a') {
         const adp = await getADPMap(a, leagueSize);
         const sorted = Object.values(adp).sort((a, b) => (a.avg ?? 9999) - (b.avg ?? 9999));
-        const data = sorted.map((d) => ({
+        const data = sorted.map((d, index) => ({
           name: d.name,
           position: d.position,
-          adpA: d.avg,
+          adpA: d.avg,           // Average ADP for charts
           adpB: null,
           delta: null,
+          truePick: index + 1,   // Actual pick for draft board
         }));
+
         const numRows = Math.ceil(data.filter(r => r.adpA !== null).length / leagueSize);
         cardRefs.current = Array.from({ length: numRows }, () =>
           Array.from({ length: leagueSize }, () => React.createRef<HTMLDivElement>())
@@ -98,13 +100,15 @@ export default function ComparePage() {
       if (mode === 'full-b') {
         const adp = await getADPMap(b, leagueSize);
         const sorted = Object.values(adp).sort((a, b) => (a.avg ?? 9999) - (b.avg ?? 9999));
-        const data = sorted.map((d) => ({
+        const data = sorted.map((d, index) => ({
           name: d.name,
           position: d.position,
-          adpA: d.avg,
+          adpA: d.avg,           // Average ADP for charts
           adpB: null,
           delta: null,
+          truePick: index + 1,   // Actual pick for draft board
         }));
+
         const numRows = Math.ceil(data.length / leagueSize);
         cardRefs.current = Array.from({ length: numRows }, () =>
           Array.from({ length: leagueSize }, () => React.createRef<HTMLDivElement>())
@@ -164,6 +168,11 @@ export default function ComparePage() {
     const sortedByPick = [...results]
       .filter((r) => r.adpA !== null)
       .sort((a, b) => (a.adpA! - b.adpA!) || a.name.localeCompare(b.name));
+
+    // Assign truePick based on sorted position
+    sortedByPick.forEach((r, i) => {
+      r.truePick = i + 1;
+    });
 
     const rows: PlayerResult[][] = [];
     for (let i = 0; i < sortedByPick.length; i += leagueSize) {
@@ -258,13 +267,11 @@ export default function ComparePage() {
                   }}
                 >
                   {displayRow.map((r, iInRow) => {
-                    const truePick =
-                      rowIndex * leagueSize +
-                      (isEvenRow ? iInRow : leagueSize - iInRow - 1) +
-                      1;
+                    const truePick = r.truePick!;
                     const round = Math.floor((truePick - 1) / leagueSize) + 1;
                     const pickInRound = ((truePick - 1) % leagueSize) + 1;
                     const roundPick = `${round}.${pickInRound < 10 ? '0' : ''}${pickInRound}`;
+
                     const refIndex = isEvenRow ? iInRow : leagueSize - iInRow - 1;
 
                     return (
@@ -347,13 +354,13 @@ export default function ComparePage() {
                 Pos {sortKey === 'position' && (sortAsc ? '↑' : '↓')}
               </th>
               <th className="p-2 cursor-pointer text-center" onClick={() => toggleSort('adpA')}>
-                ADP {sortKey === 'adpA' && (sortAsc ? '↑' : '↓')}
+                Side A Pick # {sortKey === 'adpA' && (sortAsc ? '↑' : '↓')}
               </th>
-              <th className="p-2 text-center">Round.Pick</th>
+              <th className="p-2 text-center">A Rnd.Pick</th>
               {mode === 'compare' && (
                 <>
                   <th className="p-2 cursor-pointer text-center" onClick={() => toggleSort('adpB')}>
-                    Side B {sortKey === 'adpB' && (sortAsc ? '↑' : '↓')}
+                    Side B Pick # {sortKey === 'adpB' && (sortAsc ? '↑' : '↓')}
                   </th>
                   <th className="p-2 text-center">B Rnd.Pick</th>
                   <th className="p-2 cursor-pointer text-center" onClick={() => toggleSort('delta')}>
