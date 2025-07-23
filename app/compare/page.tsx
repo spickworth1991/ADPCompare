@@ -43,17 +43,26 @@ export default function ComparePage() {
   };
 
   useEffect(() => {
-    const timeout = setTimeout(() => {
-      if (containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        setContainerOffsetX(rect.x);
-        setContainerOffsetY(rect.y);
-        setRefsReady(true); // ✅ trigger re-render after refs are valid
-      }
-    }, 100); // let the DOM layout settle
+    let raf1: number;
+    let raf2: number;
 
-    return () => clearTimeout(timeout);
+    if (showBoard && containerRef.current) {
+      raf1 = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => {
+          const rect = containerRef.current!.getBoundingClientRect();
+          setContainerOffsetX(rect.x);
+          setContainerOffsetY(rect.y);
+          setRefsReady(true); // ✅ Now safe to render SVG arrows
+        });
+      });
+    }
+
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
   }, [results, showBoard]);
+
 
 
 
@@ -187,67 +196,56 @@ export default function ComparePage() {
 
 
             return (
-              <div key={rowIndex} className="relative" style={{ minHeight: '100px' }}>
-                {/* ⬅️ Arrow to next round */}
-                {rowIndex < rows.length - 1 && refsReady && (
-                  <svg
-                    className="absolute pointer-events-none z-50"
-                    style={{ top: 0, left: 0, width: '100%', height: '100%' }}
-                  >
-                    {(() => {
-                      const from = refs[rowIndex]?.[fromIndex]?.current?.getBoundingClientRect?.();
-                      const to = refs[rowIndex + 1]?.[toIndex]?.current?.getBoundingClientRect?.();
-                      if (!from || !to) return null;
-                      const container = containerRef.current?.getBoundingClientRect();
-                      const containerOffsetX = container?.left ?? 0;
-                      const containerOffsetY = container?.top ?? 0;
+              <div key={`row-${rowIndex}`} className="relative">
+                {rowIndex < rows.length - 1 &&
+                  refsReady &&
+                  refs[rowIndex]?.[fromIndex]?.current &&
+                  refs[rowIndex + 1]?.[toIndex]?.current && (
+                    <svg
+                      className="absolute pointer-events-none z-50"
+                      style={{ top: 0, left: 0, width: '100%', height: '100%' }}
+                    >
+                      {(() => {
+                        const from = refs[rowIndex][fromIndex].current!.getBoundingClientRect();
+                        const to = refs[rowIndex + 1][toIndex].current!.getBoundingClientRect();
+                        const container = containerRef.current?.getBoundingClientRect();
+                        const containerOffsetX = container?.left ?? 0;
+                        const containerOffsetY = container?.top ?? 0;
 
-                      const x1 = from.left + from.width / 2 - containerOffsetX;
-                      const y1 = from.top + from.height - containerOffsetY;
-                      const x2 = to.left + to.width / 2 - containerOffsetX;
-                      const y2 = to.top - containerOffsetY;
-                      // console.log(`Drawing arrow for round ${rowIndex + 1}`);
-                      // console.log('fromIndex:', fromIndex, 'toIndex:', toIndex);
-                      // console.log('refs[rowIndex]:', refs[rowIndex]);
-                      // console.log('refs[rowIndex + 1]:', refs[rowIndex + 1]);
-                      // console.log('from:', from);
-                      // console.log('to:', to);
-                      console.log(
-                      `Arrow line: (${x1}, ${y1}) → (${x2}, ${y2})`,
-                      'Δx:', x2 - x1,
-                      'Δy:', y2 - y1
-);
+                        const x1 = from.left + from.width / 2 - containerOffsetX;
+                        const y1 = from.top + from.height - containerOffsetY;
+                        const x2 = to.left + to.width / 2 - containerOffsetX;
+                        const y2 = to.top - containerOffsetY;
 
-                      return (
-                        <>
-                          <defs>
-                            <marker
-                              id="arrowhead"
-                              markerWidth="10"
-                              markerHeight="7"
-                              refX="0"
-                              refY="3.5"
-                              orient="auto"
-                            >
-                              <polygon points="0 0, 10 3.5, 0 7" fill="black" />
-                            </marker>
-                          </defs>
-                          <line
-                             key={`arrow-${rowIndex}`}
-                            x1={x1}
-                            y1={y1}
-                            x2={x2}
-                            y2={y2}
-                            stroke="black"
-                            strokeWidth="2"
-                            markerEnd="url(#arrowhead)"
-                          />
-                          
-                        </>
-                        
-                      );
-                    })()}
-                  </svg>
+                        console.log(`Arrow line: (${x1}, ${y1}) → (${x2}, ${y2})`);
+
+                        return (
+                          <>
+                            <defs>
+                              <marker
+                                id="arrowhead"
+                                markerWidth="10"
+                                markerHeight="7"
+                                refX="0"
+                                refY="3.5"
+                                orient="auto"
+                              >
+                                <polygon points="0 0, 10 3.5, 0 7" fill="black" />
+                              </marker>
+                            </defs>
+                            <line
+                              x1={x1}
+                              y1={y1}
+                              x2={x2}
+                              y2={y2}
+                              stroke="black"
+                              strokeWidth="2"
+                              markerEnd="url(#arrowhead)"
+                            />
+                          </>
+                        );
+                      })()}
+                    </svg>
                 )}
 
                 {/* ⬇️ Grid Row */}
@@ -288,6 +286,7 @@ export default function ComparePage() {
                 </div>
               </div>
             );
+
           })}
         </div>
       </div>
