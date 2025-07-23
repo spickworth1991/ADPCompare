@@ -183,12 +183,14 @@ export default function ComparePage() {
 
               {/* Grid row */}
               <div
-                className="grid gap-1"
+                className="grid gap-1 mx-auto"
                 style={{
-                  display: 'grid',
+                  maxWidth: '1400px', // adjust to taste
                   gridTemplateColumns: `repeat(${leagueSize}, minmax(120px, 1fr))`,
+                  display: 'grid',
                 }}
               >
+
                 {displayRow.map((r, iInRow) => {
                   const truePick =
                     rowIndex * leagueSize + (isEvenRow ? iInRow : leagueSize - iInRow - 1) + 1;
@@ -333,12 +335,16 @@ export default function ComparePage() {
           ⬅ Home
         </button>
         <button
-          onClick={() => window.location.href = '/select'}
+          onClick={() => {
+            const username = searchParams.get('username') || '';
+            window.location.href = `/select-leagues?username=${username}`;
+          }}
           className="bg-gray-600 text-white px-4 py-1 rounded text-sm"
         >
           🗂 League Selection
         </button>
       </div>
+
 
       <h1 className="text-2xl font-bold mb-4 text-center">
         {mode === 'compare'
