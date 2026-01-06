@@ -4,10 +4,12 @@ import { getDraftPicks } from './sleeper';
 export type PlayerResult = {
   name: string;
   position: string;
-  adpA: number | null;
+  adpA: number | null; // Average ADP for charts
   adpB: number | null;
   delta: number | null;
+  truePick?: number | null; // Actual pick number for draft board
 };
+
 
 type PlayerADP = {
   name: string;
@@ -96,12 +98,14 @@ export function compareADPs(
     const b = adpB[name];
 
     const result: PlayerResult = {
-      name: name,
+      name,
       position: a?.position || b?.position || '-',
       adpA: a?.avg ?? null,
       adpB: b?.avg ?? null,
       delta: null,
+      truePick: null, // We'll assign later in ComparePage
     };
+
 
     if (result.adpA !== null && result.adpB !== null) {
       result.delta = parseFloat((result.adpB - result.adpA).toFixed(2));
