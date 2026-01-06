@@ -1,28 +1,195 @@
 'use client';
+
 import React, { useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { getADPMap, compareADPs, PlayerResult } from '@/lib/adpUtils';
 
-
+type View = 'all' | 'risers' | 'fallers' | 'unchanged';
 type SortKey = 'name' | 'position' | 'adpA' | 'adpB' | 'delta';
 
-export default function ComparePage() {
-  const [results, setResults] = useState<PlayerResult[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [sortKey, setSortKey] = useState<SortKey>('adpA');
-  const [sortAsc, setSortAsc] = useState(true);
-  const [positionFilter, setPositionFilter] = useState('All');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [page, setPage] = useState(0);
-  const [showBoard, setShowBoard] = useState(false);
-  const pageSize = 50;
-  const cardRefs = useRef<React.RefObject<HTMLDivElement>[][]>([]);
-  const searchParams = useSearchParams();
-  const a = searchParams.get('a')?.split(',').filter(Boolean) || [];
-  const b = searchParams.get('b')?.split(',').filter(Boolean) || [];
-  const leagueSize = parseInt(searchParams.get('size') || '10', 10);
-  const [refsReady, setRefsReady] = useState(false);
+type ADPExportV1 = {
+  schemaVersion: 1;
+  createdAt: string;
+  title: string;
+  mode: 'compare' | 'full-a' | 'full-b';
+  leagueSize: number;
+  leagues: {
+    sideA: string[];
+    sideB: string[];
+  };
+  players: Array<{
+    name: string;
+    position: string;
+    adpA: number | null;
+    adpB: number | null;
+    delta: number | null;
+    roundPickA: string | null;
+    roundPickB: string | null;
+  }>;
+  draftboard: {
+    totalRounds: number;
+    rows: Array<{
+      round: number;
+      direction: 'L2R' | 'R2L';
+      picks: Array<{
+        slot: number;
+        overallPick: number;
+        name: string;
+        position: string;
+        adp: number;
+        roundPick: string;
+      } | null>;
+    }>;
+  };
+};
 
+function slugifyFilename(s: string) {
+  return String(s || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '')
+    .slice(0, 80);
+}
+
+function toNumOrNull(n: unknown): number | null {
+  const x = typeof n === 'number' ? n : Number(n);
+  return Number.isFinite(x) ? x : null;
+}
+
+function downloadJson(obj: unknown, filename: string) {
+  if (typeof window === 'undefined') return;
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function toRoundPick(overallPick: number, leagueSize: number): string | null {
+  if (!Number.isFinite(overallPick) || overallPick <= 0) return null;
+  const size = Number.isFinite(leagueSize) && leagueSize > 0 ? leagueSize : 12;
+  const round = Math.floor((overallPick - 1) / size) + 1;
+  const slot = ((overallPick - 1) % size) + 1;
+  return `${round}.${String(slot).padStart(2, '0')}`;
+}
+
+function buildAdpExportV1(opts: {
+  title: string;
+  mode: 'compare' | 'full-a' | 'full-b';
+  leagueSize: number;
+  a: string[];
+  b: string[];
+  results: PlayerResult[];
+}): ADPExportV1 {
+  const { title, mode, leagueSize, a, b, results } = opts;
+  const createdAt = new Date().toISOString();
+
+  // List payload (full results, not filtered by UI)
+  const players = results
+    .slice()
+    .sort((x, y) => {
+      const ax = Number.isFinite(x.adpA as any) ? (x.adpA as number) : Infinity;
+      const ay = Number.isFinite(y.adpA as any) ? (y.adpA as number) : Infinity;
+      return ax - ay;
+    })
+    .map((r) => {
+      const adpA = toNumOrNull(r.adpA);
+      const adpB = toNumOrNull(r.adpB);
+      const delta = toNumOrNull(r.delta);
+      const pickA = adpA == null ? null : Math.round(adpA);
+      const pickB = adpB == null ? null : Math.round(adpB);
+      return {
+        name: r.name,
+        position: r.position,
+        adpA,
+        adpB,
+        delta,
+        roundPickA: pickA == null ? null : toRoundPick(pickA, leagueSize),
+        roundPickB: pickB == null ? null : toRoundPick(pickB, leagueSize),
+      };
+    });
+
+  // Draftboard payload (uses ADP A as the board-order)
+  const totalRounds = 18;
+  const totalPicks = totalRounds * leagueSize;
+
+    // Canonical board order: rank by ADP A (straight average) and assign sequential picks.
+  const boardOrdered = results
+    .filter((r) => Number.isFinite(r.adpA as any))
+    .slice()
+    .sort((x, y) => (x.adpA as number) - (y.adpA as number))
+    .slice(0, totalPicks)
+    .map((r, idx) => {
+      const overallPick = idx + 1; // <- sequential, no rounding collisions
+      const rp = toRoundPick(overallPick, leagueSize) || '';
+      return {
+        overallPick,
+        name: r.name,
+        position: r.position,
+        adp: r.adpA as number, // still store the true average for reference
+        roundPick: rp,
+      };
+    });
+
+
+  const rows: ADPExportV1['draftboard']['rows'] = [];
+  for (let round = 1; round <= totalRounds; round++) {
+    const direction: 'L2R' | 'R2L' = round % 2 === 1 ? 'L2R' : 'R2L';
+    const picks: Array<ADPExportV1['draftboard']['rows'][number]['picks'][number]> = [];
+
+    for (let slot = 1; slot <= leagueSize; slot++) {
+      const overallPick = (round - 1) * leagueSize + slot;
+      const found = boardOrdered[overallPick - 1];
+      if (!found) {
+        picks.push(null);
+        continue;
+      }
+      picks.push({
+        slot,
+        overallPick,
+        name: found.name,
+        position: found.position,
+        adp: found.adp,
+        roundPick: found.roundPick,
+      });
+    }
+
+    rows.push({ round, direction, picks });
+  }
+
+  return {
+    schemaVersion: 1,
+    createdAt,
+    title,
+    mode,
+    leagueSize,
+    leagues: { sideA: a, sideB: b },
+    players,
+    draftboard: { totalRounds, rows },
+  };
+}
+
+export default function ComparePage() {
+  const searchParams = useSearchParams();
+
+  function readIds(key: string) {
+    // supports: ?a=1&a=2  AND  ?a=1,2
+    const raw = searchParams.getAll(key);
+    return raw
+      .flatMap((v) => String(v).split(','))
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  const a = readIds('a');
+  const b = readIds('b');
+
+  const leagueSize = parseInt(searchParams.get('size') || '12', 10);
 
   const mode =
     a.length > 0 && b.length > 0
@@ -33,458 +200,381 @@ export default function ComparePage() {
       ? 'full-b'
       : 'none';
 
-  const positionColor: Record<string, string> = {
-    QB: 'bg-red-200',
-    RB: 'bg-green-200',
-    WR: 'bg-blue-200',
-    TE: 'bg-yellow-200',
-    K: 'bg-purple-200',
-    DEF: 'bg-gray-300',
-  };
+  const [exportTitle, setExportTitle] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [results, setResults] = useState<PlayerResult[]>([]);
+
+  const [view, setView] = useState<View>('all');
+  const [sortKey, setSortKey] = useState<SortKey>(mode === 'compare' ? 'delta' : 'adpA');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>(mode === 'compare' ? 'desc' : 'asc');
+
+  const [posFilter, setPosFilter] = useState<string>('ALL');
+  const [search, setSearch] = useState<string>('');
+  const [showBoard, setShowBoard] = useState(false);
+
+  const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  // If user doesn't set a title, seed one from URL + mode.
+  useEffect(() => {
+    const fromQuery = (searchParams.get('title') || '').trim();
+    if (fromQuery) {
+      setExportTitle(fromQuery);
+      return;
+    }
+    setExportTitle((prev) => {
+      if (prev && prev.trim()) return prev;
+      const base =
+        mode === 'compare'
+          ? 'ADP Compare'
+          : mode === 'full-a'
+          ? 'ADP List (Side A)'
+          : mode === 'full-b'
+          ? 'ADP List (Side B)'
+          : 'ADP Export';
+      return base;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
+
+  // When mode changes, reset view + default sorting appropriately
+  useEffect(() => {
+    setView('all');
+    if (mode === 'compare') {
+      setSortKey('delta');
+      setSortDir('desc');
+    } else if (mode === 'full-a' || mode === 'full-b') {
+      setSortKey('adpA');
+      setSortDir('asc');
+    }
+  }, [mode]);
 
   useEffect(() => {
-    let raf1: number;
-    let raf2: number;
+    async function load() {
+      setLoading(true);
+      try {
+        const size = Number.isFinite(leagueSize) && leagueSize > 0 ? leagueSize : 12;
 
-    if (showBoard && containerRef.current) {
-      raf1 = requestAnimationFrame(() => {
-        raf2 = requestAnimationFrame(() => {
-          const rect = containerRef.current!.getBoundingClientRect();
-          setContainerOffsetX(rect.x);
-          setContainerOffsetY(rect.y);
-          setRefsReady(true); // ✅ Now safe to render SVG arrows
-        });
-      });
+        if (mode === 'compare') {
+          const [mapA, mapB] = await Promise.all([getADPMap(a, size), getADPMap(b, size)]);
+          setResults(compareADPs(mapA, mapB));
+        } else if (mode === 'full-a') {
+          const mapA = await getADPMap(a, size);
+          setResults(compareADPs(mapA, {}));
+        } else if (mode === 'full-b') {
+          const mapB = await getADPMap(b, size);
+          setResults(compareADPs(mapB, {}));
+        } else {
+          setResults([]);
+        }
+      } finally {
+        setLoading(false);
+      }
     }
 
-    return () => {
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
-    };
-  }, [results, showBoard]);
+    load();
+  }, [a.join(','), b.join(','), mode, leagueSize]);
 
-
-
-
-  useEffect(() => {
-    const run = async () => {
-      if (mode === 'none') {
-        setResults([]);
-        setLoading(false);
-        return;
-      }
-
-      if (mode === 'full-a') {
-        const adp = await getADPMap(a, leagueSize);
-        const sorted = Object.values(adp).sort((a, b) => (a.avg ?? 9999) - (b.avg ?? 9999));
-        const data = sorted.map((d, index) => ({
-          name: d.name,
-          position: d.position,
-          adpA: d.avg,           // Average ADP for charts
-          adpB: null,
-          delta: null,
-          truePick: index + 1,   // Actual pick for draft board
-        }));
-
-        const numRows = Math.ceil(data.filter(r => r.adpA !== null).length / leagueSize);
-        cardRefs.current = Array.from({ length: numRows }, () =>
-          Array.from({ length: leagueSize }, () => React.createRef<HTMLDivElement>())
-        );
-
-        setResults(data);
-        setLoading(false);
-        return;
-      }
-
-
-      if (mode === 'full-b') {
-        const adp = await getADPMap(b, leagueSize);
-        const sorted = Object.values(adp).sort((a, b) => (a.avg ?? 9999) - (b.avg ?? 9999));
-        const data = sorted.map((d, index) => ({
-          name: d.name,
-          position: d.position,
-          adpA: d.avg,           // Average ADP for charts
-          adpB: null,
-          delta: null,
-          truePick: index + 1,   // Actual pick for draft board
-        }));
-
-        const numRows = Math.ceil(data.length / leagueSize);
-        cardRefs.current = Array.from({ length: numRows }, () =>
-          Array.from({ length: leagueSize }, () => React.createRef<HTMLDivElement>())
-        );
-        setResults(data);
-        setLoading(false);
-        return;
-      }
-
-
-      const adpA = await getADPMap(a, leagueSize);
-      const adpB = await getADPMap(b, leagueSize);
-      const result = compareADPs(adpA, adpB);
-      setResults(result);
-      setLoading(false);
-    };
-
-    run();
-  }, []);
-
-  const toggleSort = (key: SortKey) => {
-    if (sortKey === key) {
-      setSortAsc(!sortAsc);
-    } else {
-      setSortKey(key);
-      setSortAsc(true);
-    }
-  };
-
-  const formatRoundPick = (pick: number | null) => {
-    if (pick === null) return '-';
-    const overall = Math.round(pick);
-    const round = Math.floor((overall - 1) / leagueSize) + 1;
-    const pickInRound = ((overall - 1) % leagueSize) + 1;
-    return `${round}.${pickInRound < 10 ? '0' : ''}${pickInRound}`;
-  };
-
-  const filtered = results.filter(
-    (r) =>
-      (positionFilter === 'All' || r.position === positionFilter) &&
-      r.name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
-  const sorted = [...filtered].sort((a, b) => {
-    const valA = a[sortKey] ?? 9999;
-    const valB = b[sortKey] ?? 9999;
-    return sortAsc ? (valA > valB ? 1 : -1) : valA < valB ? 1 : -1;
-  });
-
-  const totalPages = Math.ceil(sorted.length / pageSize);
-  const paginated = sorted.slice(page * pageSize, (page + 1) * pageSize);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [containerOffsetX, setContainerOffsetX] = useState(0);
-  const [containerOffsetY, setContainerOffsetY] = useState(0);
-
-  const renderDraftBoard = () => {
-    const sortedByPick = [...results]
-      .filter((r) => r.adpA !== null)
-      .sort((a, b) => (a.adpA! - b.adpA!) || a.name.localeCompare(b.name));
-
-    // Assign truePick based on sorted position
-    sortedByPick.forEach((r, i) => {
-      r.truePick = i + 1;
+  const handleDownloadJson = () => {
+    const title = exportTitle.trim() || 'ADP Compare';
+    const payload = buildAdpExportV1({
+      title,
+      mode: mode === 'compare' || mode === 'full-a' || mode === 'full-b' ? mode : 'compare',
+      leagueSize: Number.isFinite(leagueSize) && leagueSize > 0 ? leagueSize : 12,
+      a,
+      b,
+      results,
     });
 
-    const rows: PlayerResult[][] = [];
-    for (let i = 0; i < sortedByPick.length; i += leagueSize) {
-      rows.push(sortedByPick.slice(i, i + leagueSize));
+    const date = new Date().toISOString().slice(0, 10);
+    const slug = slugifyFilename(title) || 'adp';
+    const filename = `adp_${slug}_${date}.json`;
+    downloadJson(payload, filename);
+  };
+
+  const filtered = results
+    .filter((r) => {
+      if (posFilter !== 'ALL' && r.position !== posFilter) return false;
+
+      if (search.trim()) {
+        const s = search.trim().toLowerCase();
+        if (!r.name.toLowerCase().includes(s)) return false;
+      }
+
+      // Single-side = ALWAYS full list
+      if (mode !== 'compare') return true;
+
+      // Compare-mode view filters
+      if (view === 'all') return true;
+      if (view === 'risers') return r.delta > 0;
+      if (view === 'fallers') return r.delta < 0;
+      return r.delta === 0;
+    })
+    .sort((x, y) => {
+      const vX = (x as any)[sortKey];
+      const vY = (y as any)[sortKey];
+
+      if (typeof vX === 'string') {
+        const cmp = String(vX).localeCompare(String(vY));
+        return sortDir === 'asc' ? cmp : -cmp;
+      }
+
+      const nx = Number.isFinite(vX) ? vX : Infinity;
+      const ny = Number.isFinite(vY) ? vY : Infinity;
+
+      const cmp = nx - ny;
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+
+  const renderDraftBoard = () => {
+    const totalRounds = 18;
+    const totalPicks = totalRounds * leagueSize;
+
+    const sortedByPick = results
+      .filter((r) => Number.isFinite(r.adpA))
+      .slice()
+      .sort((x, y) => x.adpA - y.adpA)
+      .slice(0, totalPicks);
+
+    const rounds: PlayerResult[][] = [];
+    for (let i = 0; i < totalRounds; i++) {
+      const slice = sortedByPick.slice(i * leagueSize, (i + 1) * leagueSize);
+      rounds.push(slice);
     }
 
-    const refs = cardRefs.current;
-    
     return (
-      <div className="mt-8 w-full relative overflow-visible">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-xl font-bold text-center">🧾 Draft Board View</h2>
+      <div className="mt-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold">Draft Board</h2>
           <button
+            className="text-sm px-3 py-1 rounded bg-gray-200 hover:bg-gray-300"
             onClick={() => setShowBoard(false)}
-            className="bg-gray-500 text-white px-4 py-1 rounded text-sm"
           >
-            Back to List
+            Back to list
           </button>
         </div>
 
-        <div ref={containerRef} className="space-y-16 relative">
-          {rows.map((row, rowIndex) => {
-            const isEvenRow = rowIndex % 2 === 0;
-            const displayRow = isEvenRow ? row : [...row].reverse();
+        <div className="overflow-x-auto border rounded">
+          <div className="min-w-[900px]">
+            {rounds.map((roundPlayers, roundIdx) => {
+              const roundNum = roundIdx + 1;
+              const snakeRight = roundNum % 2 === 0;
 
-            const nextRow = rows[rowIndex + 1] || [];
-            const toIndex = (rowIndex + 1) % 2 === 0 ? nextRow.length - 1 : 0;
-            const fromIndex = isEvenRow ? row.length - 1 : 0;
+              const ordered = snakeRight ? [...roundPlayers].reverse() : roundPlayers;
 
-
-
-            return (
-              <div key={`row-${rowIndex}`} className="relative">
-                {rowIndex < rows.length - 1 &&
-                  refsReady &&
-                  refs[rowIndex]?.[fromIndex]?.current &&
-                  refs[rowIndex + 1]?.[toIndex]?.current && (
-                    <svg
-                      className="absolute pointer-events-none z-50"
-                      style={{ top: 0, left: 0, width: '100%', height: '100%' }}
-                    >
-                      {(() => {
-                        const from = refs[rowIndex][fromIndex].current!.getBoundingClientRect();
-                        const to = refs[rowIndex + 1][toIndex].current!.getBoundingClientRect();
-                        const container = containerRef.current?.getBoundingClientRect();
-                        const containerOffsetX = container?.left ?? 0;
-                        const containerOffsetY = container?.top ?? 0;
-
-                        const x1 = from.left + from.width / 2 - containerOffsetX;
-                        const y1 = from.top + from.height - containerOffsetY;
-                        const x2 = to.left + to.width / 2 - containerOffsetX;
-                        const y2 = to.top - containerOffsetY;
-
-                        console.log(`Arrow line: (${x1}, ${y1}) → (${x2}, ${y2})`);
-
-                        return (
-                          <>
-                            <defs>
-                              <marker
-                                id="arrowhead"
-                                markerWidth="10"
-                                markerHeight="7"
-                                refX="0"
-                                refY="3.5"
-                                orient="auto"
-                              >
-                                <polygon points="0 0, 10 3.5, 0 7" fill="black" />
-                              </marker>
-                            </defs>
-                            <line
-                              x1={x1}
-                              y1={y1}
-                              x2={x2}
-                              y2={y2}
-                              stroke="black"
-                              strokeWidth="2"
-                              markerEnd="url(#arrowhead)"
-                            />
-                          </>
-                        );
-                      })()}
-                    </svg>
-                )}
-
-                {/* ⬇️ Grid Row */}
+              return (
                 <div
-                  className="grid gap-1 mx-auto"
-                  style={{
-                    gridTemplateColumns: `repeat(${leagueSize}, minmax(120px, 1fr))`,
-                    maxWidth: `${leagueSize * 130}px`,
-                    display: 'grid',
-                  }}
+                  key={roundIdx}
+                  className="grid"
+                  style={{ gridTemplateColumns: `80px repeat(${leagueSize}, minmax(0, 1fr))` }}
                 >
-                  {displayRow.map((r, iInRow) => {
-                    const truePick = r.truePick!;
-                    const round = Math.floor((truePick - 1) / leagueSize) + 1;
-                    const pickInRound = ((truePick - 1) % leagueSize) + 1;
-                    const roundPick = `${round}.${pickInRound < 10 ? '0' : ''}${pickInRound}`;
-
-                    const refIndex = isEvenRow ? iInRow : leagueSize - iInRow - 1;
-
+                  <div className="p-2 border-b border-r font-semibold bg-gray-50">R{roundNum}</div>
+                  {Array.from({ length: leagueSize }).map((_, i) => {
+                    const p = ordered[i];
                     return (
-                      <div
-                        key={`${rowIndex}-${iInRow}-${r.name}`}
-                        ref={refs[rowIndex]?.[refIndex]}
-                        className={`relative p-3 text-sm border rounded shadow text-center font-medium ${
-                          positionColor[r.position] || 'bg-white'
-                        }`}
-                        style={{ minHeight: '64px' }}
-                      >
-                        <div className="truncate">{r.name}</div>
-                        <div className="text-[11px]">
-                          {r.position} • {roundPick}
-                        </div>
+                      <div key={i} className="p-2 border-b border-r text-xs">
+                        {p ? (
+                          <>
+                            <div className="font-semibold truncate">{p.name}</div>
+                            <div className="text-gray-600">{p.position}</div>
+                            <div className="text-gray-500">
+                              {toRoundPick(roundIdx * leagueSize + (snakeRight ? (leagueSize - i) : (i + 1)), leagueSize)}
+                            </div>
+                          </>
+                        ) : (
+                          <div className="text-gray-300">—</div>
+                        )}
                       </div>
                     );
                   })}
                 </div>
-              </div>
-            );
-
-          })}
+              );
+            })}
+          </div>
         </div>
       </div>
     );
   };
 
+  if (loading) return <div className="p-6">Loading...</div>;
+  if (mode === 'none') return <div className="p-6">Missing league IDs.</div>;
 
-  const renderTable = (items: PlayerResult[], title: string, localMode: string) => (
-    <div className="mt-8">
-      <h2 className="text-xl font-bold mb-2 text-center">{title}</h2>
+  const titleText =
+    mode === 'compare' ? 'ADP Compare' : mode === 'full-a' ? 'Side A ADP List' : 'Side B ADP List';
 
-      {!showBoard && title.toLowerCase().includes('full') && (
-        <div className="flex justify-between items-center mb-4 gap-4 flex-wrap">
-          <input
-            type="text"
-            placeholder="Search by name..."
-            value={searchTerm}
-            onChange={(e) => {
-              setSearchTerm(e.target.value);
-              setPage(0);
-            }}
-            className="border px-3 py-1 rounded w-full max-w-xs"
-          />
+  return (
+    <div className="p-6">
+      <h1 className="text-2xl font-bold mb-4">{titleText}</h1>
+
+      <div className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between mb-4">
+        <div className="flex gap-2">
+          {mode === 'compare' ? (
+            <>
+              <button
+                className={`px-3 py-1 rounded ${view === 'all' ? 'bg-blue-700 text-white' : 'bg-gray-200'}`}
+                onClick={() => setView('all')}
+              >
+                All
+              </button>
+              <button
+                className={`px-3 py-1 rounded ${view === 'risers' ? 'bg-green-600 text-white' : 'bg-gray-200'}`}
+                onClick={() => setView('risers')}
+              >
+                Risers
+              </button>
+              <button
+                className={`px-3 py-1 rounded ${view === 'fallers' ? 'bg-red-600 text-white' : 'bg-gray-200'}`}
+                onClick={() => setView('fallers')}
+              >
+                Fallers
+              </button>
+              <button
+                className={`px-3 py-1 rounded ${view === 'unchanged' ? 'bg-gray-800 text-white' : 'bg-gray-200'}`}
+                onClick={() => setView('unchanged')}
+              >
+                Unchanged
+              </button>
+            </>
+          ) : (
+            <button className="px-3 py-1 rounded bg-blue-700 text-white" disabled>
+              All
+            </button>
+          )}
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
           <select
-            value={positionFilter}
-            onChange={(e) => {
-              setPositionFilter(e.target.value);
-              setPage(0);
-            }}
-            className="border px-2 py-1 text-sm rounded"
+            value={posFilter}
+            onChange={(e) => setPosFilter(e.target.value)}
+            className="border px-2 py-1 rounded text-sm"
           >
-            <option value="All">All Positions</option>
+            <option value="ALL">All Positions</option>
             <option value="QB">QB</option>
             <option value="RB">RB</option>
             <option value="WR">WR</option>
             <option value="TE">TE</option>
             <option value="K">K</option>
+            <option value="DEF">DEF</option>
           </select>
-          {(localMode === 'full-a' || localMode === 'full-b') && (
+
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search name..."
+            className="border px-2 py-1 rounded text-sm"
+          />
+
+          {mode !== 'compare' && (
             <button
-              onClick={() => setShowBoard(true)}
-              className="bg-blue-500 text-white px-4 py-1 rounded text-sm"
+              className={`px-3 py-1 rounded text-sm ${showBoard ? 'bg-blue-600 text-white' : 'bg-gray-200'}`}
+              onClick={() => setShowBoard((v) => !v)}
             >
-              Draft Board View
+              {showBoard ? 'Hide Draft Board' : 'Show Draft Board'}
             </button>
           )}
         </div>
-      )}
-
-      <div className="overflow-x-auto">
-        <table className="w-full bg-white shadow rounded text-sm text-left">
-          <thead className="bg-blue-100">
-            <tr>
-              <th className="p-2 cursor-pointer" onClick={() => toggleSort('name')}>
-                Player {sortKey === 'name' && (sortAsc ? '↑' : '↓')}
-              </th>
-              <th className="p-2 cursor-pointer" onClick={() => toggleSort('position')}>
-                Pos {sortKey === 'position' && (sortAsc ? '↑' : '↓')}
-              </th>
-              <th className="p-2 cursor-pointer text-center" onClick={() => toggleSort('adpA')}>
-                Side A Pick # {sortKey === 'adpA' && (sortAsc ? '↑' : '↓')}
-              </th>
-              <th className="p-2 text-center">A Rnd.Pick</th>
-              {mode === 'compare' && (
-                <>
-                  <th className="p-2 cursor-pointer text-center" onClick={() => toggleSort('adpB')}>
-                    Side B Pick # {sortKey === 'adpB' && (sortAsc ? '↑' : '↓')}
-                  </th>
-                  <th className="p-2 text-center">B Rnd.Pick</th>
-                  <th className="p-2 cursor-pointer text-center" onClick={() => toggleSort('delta')}>
-                    Change {sortKey === 'delta' && (sortAsc ? '↑' : '↓')}
-                  </th>
-                </>
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((r) => (
-              <tr key={r.name} className="border-b last:border-none">
-                <td className="p-2">{r.name}</td>
-                <td className="p-2">{r.position ?? '-'}</td>
-                <td className="text-center">{r.adpA ?? '-'}</td>
-                <td className="text-center">{formatRoundPick(r.adpA)}</td>
-                {mode === 'compare' && (
-                  <>
-                    <td className="text-center">{r.adpB ?? '-'}</td>
-                    <td className="text-center">{formatRoundPick(r.adpB)}</td>
-                    <td
-                      className={`text-center font-bold ${
-                        r.delta && r.delta < 0 ? 'text-green-600' : 'text-red-600'
-                      }`}
-                    >
-                      {r.delta !== null
-                        ? r.delta > 0
-                          ? `⬇️ ${r.delta}`
-                          : `⬆️ ${Math.abs(r.delta)}`
-                        : '-'}
-                    </td>
-                  </>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-
-  return (
-    <div className="p-4 min-h-screen bg-gray-50">
-      <div className="flex justify-between items-center mb-4">
-        <button
-          onClick={() => (window.location.href = '/')}
-          className="bg-gray-600 text-white px-4 py-1 rounded text-sm"
-        >
-          ⬅ Home
-        </button>
-        <button
-          onClick={() => {
-            const username = searchParams.get('username') || '';
-            window.location.href = `/select-leagues?username=${username}`;
-          }}
-          className="bg-gray-600 text-white px-4 py-1 rounded text-sm"
-        >
-          🗂 League Selection
-        </button>
       </div>
 
-      <h1 className="text-2xl font-bold mb-4 text-center">
-        {mode === 'compare'
-          ? 'ADP Comparison'
-          : mode === 'full-a'
-          ? 'ADP List (Side A)'
-          : mode === 'full-b'
-          ? 'ADP List (Side B)'
-          : 'No Leagues Selected'}
-      </h1>
+      {/* Export */}
+      <div className="mt-4 flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+        <input
+          value={exportTitle}
+          onChange={(e) => setExportTitle(e.target.value)}
+          placeholder="Export title (e.g., Gauntlet 2026 ADP)"
+          className="border px-3 py-2 rounded text-sm flex-1"
+        />
+        <button
+          type="button"
+          onClick={handleDownloadJson}
+          disabled={!results.length}
+          className={`px-4 py-2 rounded text-sm font-semibold ${
+            results.length ? 'bg-black text-white hover:bg-gray-800' : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+          }`}
+        >
+          Download JSON
+        </button>
+      </div>
+      <p className="text-xs text-gray-500 mt-1">
+        Exports one JSON that includes both the list-view results and the draftboard grid. File is named using your title + today’s date.
+      </p>
 
-      {loading ? (
-        <p className="text-center">Loading...</p>
-      ) : showBoard && (mode === 'full-a' || mode === 'full-b') ? (
+      {showBoard ? (
         renderDraftBoard()
       ) : (
-        <>
-          {mode === 'compare' && (
-            <>
-              {renderTable(
-                [...results]
-                  .filter((r) => r.delta !== null && r.delta < 0)
-                  .sort((a, b) => a.delta! - b.delta!)
-                  .slice(0, 10),
-                '📈 Top 10 Risers',
-                mode
-              )}
-              {renderTable(
-                [...results]
-                  .filter((r) => r.delta !== null && r.delta > 0)
-                  .sort((a, b) => b.delta! - a.delta!)
-                  .slice(0, 10),
-                '📉 Top 10 Fallers',
-                mode
-              )}
-            </>
-          )}
-          {renderTable(
-            paginated,
-            mode === 'compare'
-              ? 'Full Comparison'
-              : mode === 'full-a'
-              ? 'Full ADP Results (Side A)'
-              : 'Full ADP Results (Side B)',
-            mode
-          )}
-          {totalPages > 1 && (
-            <div className="flex justify-center mt-6 space-x-2">
-              {Array.from({ length: totalPages }, (_, i) => (
-                <button
-                  key={i}
-                  onClick={() => setPage(i)}
-                  className={`px-3 py-1 rounded ${
-                    i === page ? 'bg-blue-600 text-white' : 'bg-gray-200'
-                  }`}
+        <div className="overflow-x-auto">
+          <table className="min-w-full border text-sm">
+            <thead>
+              <tr className="bg-gray-100">
+                <th
+                  className="p-2 border cursor-pointer"
+                  onClick={() => {
+                    setSortKey('name');
+                    setSortDir(sortKey === 'name' && sortDir === 'asc' ? 'desc' : 'asc');
+                  }}
                 >
-                  {i + 1}
-                </button>
+                  Name
+                </th>
+                <th
+                  className="p-2 border cursor-pointer"
+                  onClick={() => {
+                    setSortKey('position');
+                    setSortDir(sortKey === 'position' && sortDir === 'asc' ? 'desc' : 'asc');
+                  }}
+                >
+                  Pos
+                </th>
+                <th
+                  className="p-2 border cursor-pointer"
+                  onClick={() => {
+                    setSortKey('adpA');
+                    setSortDir(sortKey === 'adpA' && sortDir === 'asc' ? 'desc' : 'asc');
+                  }}
+                >
+                  ADP A
+                </th>
+                <th
+                  className="p-2 border cursor-pointer"
+                  onClick={() => {
+                    setSortKey('adpB');
+                    setSortDir(sortKey === 'adpB' && sortDir === 'asc' ? 'desc' : 'asc');
+                  }}
+                >
+                  ADP B
+                </th>
+                <th
+                  className="p-2 border cursor-pointer"
+                  onClick={() => {
+                    setSortKey('delta');
+                    setSortDir(sortKey === 'delta' && sortDir === 'asc' ? 'desc' : 'asc');
+                  }}
+                >
+                  Δ
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r, idx) => (
+                <tr key={`${r.name}-${r.position}-${idx}`} className="odd:bg-white even:bg-gray-50">
+                  <td className="p-2 border">{r.name}</td>
+                  <td className="p-2 border">{r.position}</td>
+                  <td className="p-2 border">{Number.isFinite(r.adpA) ? r.adpA.toFixed(1) : '—'}</td>
+                  <td className="p-2 border">{Number.isFinite(r.adpB) ? r.adpB.toFixed(1) : '—'}</td>
+                  <td className={`p-2 border ${r.delta > 0 ? 'text-green-700' : r.delta < 0 ? 'text-red-700' : ''}`}>
+                    {Number.isFinite(r.delta) ? r.delta.toFixed(1) : '—'}
+                  </td>
+                </tr>
               ))}
-            </div>
-          )}
-        </>
+
+              {!filtered.length && (
+                <tr>
+                  <td className="p-3 border text-gray-500" colSpan={5}>
+                    No results for current filters.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
-
 }

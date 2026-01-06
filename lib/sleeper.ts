@@ -1,10 +1,20 @@
 //sleeper.ts
 import axios from 'axios';
 
+function getCurrentSeason(d = new Date()) {
+  const dt = d instanceof Date ? d : new Date(d);
+  const y = dt.getFullYear();
+  const m = dt.getMonth() + 1; // 1-12
+
+  // Jan + Feb are still considered the previous season year.
+  // March and later count as the new season year.
+  return m <= 2 ? y - 1 : y;
+}
+
 export async function getUserLeagues(username: string): Promise<any[]> {
   const userRes = await axios.get(`https://api.sleeper.app/v1/user/${username}`);
   const userId = userRes.data.user_id;
-  const currentYear = new Date().getFullYear();
+  const currentYear = getCurrentSeason();
   const leaguesRes = await axios.get(
     `https://api.sleeper.app/v1/user/${userId}/leagues/nfl/${currentYear}`
   );
