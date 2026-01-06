@@ -1,165 +1,190 @@
-'use client';
-import { useEffect, useState } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
-import axios from 'axios';
+"use client";
 
-type League = { league_id: string; name: string };
+import React, { useEffect, useMemo, useState } from "react";
+import axios from "axios";
+import { useRouter, useSearchParams } from "next/navigation";
 
-export default function SelectLeagues() {
-  const [leagueSize, setLeagueSize] = useState(12);
+type League = {
+  league_id: string;
+  name: string;
+  season: string;
+};
+
+function uniq<T>(arr: T[]): T[] {
+  return Array.from(new Set(arr));
+}
+
+function getCurrentSeason(d = new Date()) {
+  const dt = d instanceof Date ? d : new Date(d);
+  const y = dt.getFullYear();
+  const m = dt.getMonth() + 1; // 1-12
+
+  // Jan + Feb are still considered the previous season year.
+  // March and later count as the new season year.
+  return m <= 2 ? y - 1 : y;
+}
+
+export default function SelectLeaguesPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const username = searchParams.get("username");
+  const season = (searchParams.get("season") || "").trim() || String(getCurrentSeason());
+
   const [leagues, setLeagues] = useState<League[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>("");
+
   const [sideA, setSideA] = useState<string[]>([]);
   const [sideB, setSideB] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-  const searchParams = useSearchParams();
-  const router = useRouter();
-  const username = searchParams.get('username');
 
   useEffect(() => {
     const fetchLeagues = async () => {
-      try {
-        const res = await axios.get(`/api/leagues?username=${username}`);
-        setLeagues(res.data);
+      if (!username) {
+        setLeagues([]);
         setLoading(false);
-      } catch (err) {
-        console.error(err);
+        return;
+      }
+
+      setLoading(true);
+      setError("");
+
+      try {
+        const res = await axios.get(`/api/leagues?username=${encodeURIComponent(username)}&season=${encodeURIComponent(season)}`);
+        setLeagues(res.data?.leagues || []);
+      } catch (e: any) {
+        setError("Failed to load leagues. Double-check the username.");
+        setLeagues([]);
+      } finally {
+        setLoading(false);
       }
     };
-    fetchLeagues();
-  }, [username]);
 
-  const handleToggle = (leagueId: string, side: 'A' | 'B') => {
-    if (side === 'A') {
-      setSideA((prev) =>
-        prev.includes(leagueId) ? prev.filter((id) => id !== leagueId) : [...prev, leagueId]
-      );
-      setSideB((prev) => prev.filter((id) => id !== leagueId));
+    fetchLeagues();
+  }, [username, season]);
+
+  const selected = useMemo(() => uniq([...sideA, ...sideB]), [sideA, sideB]);
+
+  const toggle = (leagueId: string, side: "A" | "B") => {
+    setError("");
+    if (side === "A") {
+      setSideA((prev) => (prev.includes(leagueId) ? prev.filter((x) => x !== leagueId) : [...prev, leagueId]));
+      setSideB((prev) => prev.filter((x) => x !== leagueId));
     } else {
-      setSideB((prev) =>
-        prev.includes(leagueId) ? prev.filter((id) => id !== leagueId) : [...prev, leagueId]
-      );
-      setSideA((prev) => prev.filter((id) => id !== leagueId));
+      setSideB((prev) => (prev.includes(leagueId) ? prev.filter((x) => x !== leagueId) : [...prev, leagueId]));
+      setSideA((prev) => prev.filter((x) => x !== leagueId));
     }
   };
 
-  const handleClear = () => {
-    setSideA([]);
-    setSideB([]);
+  const goCompare = () => {
+    const qs = new URLSearchParams();
+    sideA.forEach((id) => qs.append("a", id));
+    sideB.forEach((id) => qs.append("b", id));
+    router.push(`/compare?${qs.toString()}`);
   };
 
-  const handleCompare = () => {
-    const query = new URLSearchParams({
-      a: sideA.join(','),
-      b: sideB.join(','),
-      username: username || '',
-      size: leagueSize.toString(),
-    }).toString();
-    router.push(`/compare?${query}`);
-  };
-
-  const getLeagueName = (id: string) => leagues.find((l) => l.league_id === id)?.name || 'Unknown';
+  if (loading) return <div className="p-6">Loading leagues...</div>;
+  if (!username) return <div className="p-6">Missing username.</div>;
 
   return (
-    <div className="min-h-screen p-6 bg-gray-50">
-      <h1 className="text-3xl font-bold mb-6 text-center">Select Leagues</h1>
+    <div className="p-6 space-y-4">
+      <h1 className="text-2xl font-bold">Select Leagues</h1>
 
-      <div className="text-center mb-6">
-        <label className="mr-2 font-semibold">League Size:</label>
-        <select
-          className="border rounded px-2 py-1"
-          value={leagueSize}
-          onChange={(e) => setLeagueSize(Number(e.target.value))}
-        >
-          {[8, 10, 12, 14, 16].map((size) => (
-            <option key={size} value={size}>{size}</option>
-          ))}
-        </select>
-        <button
-          onClick={handleClear}
-          className="ml-6 px-4 py-1 bg-red-600 text-white rounded hover:bg-red-700"
-        >
-          Clear Selections
-        </button>
+      <div className="text-xs text-gray-500">
+        Season: <span className="font-semibold">{season}</span>
       </div>
 
-      {loading ? (
-        <p className="text-center">Loading leagues for {username}...</p>
-      ) : (
-        <div className="flex flex-col md:flex-row gap-4 max-w-7xl mx-auto">
-          {/* Side A */}
-          <div className="w-full md:w-1/3 bg-green-100 p-4 rounded shadow">
-            <h2 className="text-xl font-bold mb-3 text-center">Side A (earlier seasons)</h2>
-            {sideA.map((id) => (
-              <div
-                key={id}
-                className="bg-white p-2 rounded shadow mb-2 transition-all duration-200"
-              >
-                {getLeagueName(id)}
-              </div>
-            ))}
-          </div>
+      {error ? <div className="text-sm text-red-600">{error}</div> : null}
 
-          {/* All leagues */}
-          <div className="w-full md:w-1/3 bg-white p-4 rounded shadow border max-h-[80vh] overflow-y-auto">
-            <h2 className="text-xl font-bold mb-3 text-center">All Leagues</h2>
-            {leagues.map((league) => {
-              const isA = sideA.includes(league.league_id);
-              const isB = sideB.includes(league.league_id);
-              const dim = isA || isB;
+      <div className="grid md:grid-cols-3 gap-4">
+        <div className="border rounded p-3">
+          <div className="font-semibold mb-2">Side A</div>
+          <div className="text-xs text-gray-500 mb-2">{sideA.length} selected</div>
+          <div className="space-y-1">
+            {sideA.map((id) => {
+              const l = leagues.find((x) => x.league_id === id);
+              return (
+                <button
+                  key={id}
+                  className="w-full text-left text-sm px-2 py-1 rounded bg-gray-100 hover:bg-gray-200"
+                  onClick={() => toggle(id, "A")}
+                >
+                  {l?.name || id}
+                </button>
+              );
+            })}
+            {!sideA.length ? <div className="text-xs text-gray-400">None</div> : null}
+          </div>
+        </div>
+
+        <div className="border rounded p-3">
+          <div className="font-semibold mb-2">All Leagues</div>
+          <div className="text-xs text-gray-500 mb-2">{leagues.length} found</div>
+
+          <div className="space-y-2 max-h-[55vh] overflow-auto pr-1">
+            {leagues.map((l) => {
+              const isA = sideA.includes(l.league_id);
+              const isB = sideB.includes(l.league_id);
+              const isSelected = isA || isB;
 
               return (
-                <div
-                  key={league.league_id}
-                  className={`flex justify-between items-center p-2 border-b transition-all duration-150 ${
-                    dim ? 'opacity-60' : ''
-                  }`}
-                >
-                  <span className="text-sm font-medium">{league.name}</span>
-                  <div className="flex gap-2">
-                    <label className="flex items-center gap-1 text-green-700 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={isA}
-                        onChange={() => handleToggle(league.league_id, 'A')}
-                      />
-                      A
-                    </label>
-                    <label className="flex items-center gap-1 text-blue-700 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={isB}
-                        onChange={() => handleToggle(league.league_id, 'B')}
-                      />
-                      B
-                    </label>
+                <div key={l.league_id} className={`border rounded p-2 ${isSelected ? "bg-gray-50" : ""}`}>
+                  <div className="text-sm font-semibold">{l.name}</div>
+                  <div className="text-xs text-gray-500">ID: {l.league_id}</div>
+
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      className={`px-2 py-1 rounded text-xs ${isA ? "bg-blue-700 text-white" : "bg-gray-200"}`}
+                      onClick={() => toggle(l.league_id, "A")}
+                    >
+                      Side A
+                    </button>
+                    <button
+                      className={`px-2 py-1 rounded text-xs ${isB ? "bg-blue-700 text-white" : "bg-gray-200"}`}
+                      onClick={() => toggle(l.league_id, "B")}
+                    >
+                      Side B
+                    </button>
                   </div>
                 </div>
               );
             })}
           </div>
+        </div>
 
-          {/* Side B */}
-          <div className="w-full md:w-1/3 bg-blue-100 p-4 rounded shadow">
-            <h2 className="text-xl font-bold mb-3 text-center">Side B</h2>
-            {sideB.map((id) => (
-              <div
-                key={id}
-                className="bg-white p-2 rounded shadow mb-2 transition-all duration-200"
-              >
-                {getLeagueName(id)}
-              </div>
-            ))}
+        <div className="border rounded p-3">
+          <div className="font-semibold mb-2">Side B</div>
+          <div className="text-xs text-gray-500 mb-2">{sideB.length} selected</div>
+          <div className="space-y-1">
+            {sideB.map((id) => {
+              const l = leagues.find((x) => x.league_id === id);
+              return (
+                <button
+                  key={id}
+                  className="w-full text-left text-sm px-2 py-1 rounded bg-gray-100 hover:bg-gray-200"
+                  onClick={() => toggle(id, "B")}
+                >
+                  {l?.name || id}
+                </button>
+              );
+            })}
+            {!sideB.length ? <div className="text-xs text-gray-400">None</div> : null}
           </div>
         </div>
-      )}
+      </div>
 
-      <div className="text-center mt-8">
+      <div className="flex gap-2">
         <button
-          onClick={handleCompare}
-          className="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700 disabled:bg-gray-400"
+          onClick={goCompare}
+          disabled={!sideA.length}
+          className={`px-4 py-2 rounded font-semibold text-sm ${
+            sideA.length ? "bg-black text-white hover:bg-gray-800" : "bg-gray-200 text-gray-500 cursor-not-allowed"
+          }`}
         >
-          Compare ADPs
+          Continue
         </button>
+        <div className="text-xs text-gray-500 self-center">
+          Tip: Side B optional — Side A alone generates a full ADP list + draftboard.
+        </div>
       </div>
     </div>
   );
