@@ -1,47 +1,17 @@
 'use client';
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { getADPMap, compareADPs, PlayerResult } from '@/lib/adpUtils';
+import {
+  compareADPs,
+  getADPGroupData,
+  type PlayerResult,
+  type ADPGroupData,
+  type DraftboardCellEntry,
+} from '@/lib/adpUtils';
 
 type View = 'all' | 'risers' | 'fallers' | 'unchanged';
-type SortKey = 'name' | 'position' | 'adpA' | 'adpB' | 'delta';
-
-type ADPExportV1 = {
-  schemaVersion: 1;
-  createdAt: string;
-  title: string;
-  mode: 'compare' | 'full-a' | 'full-b';
-  leagueSize: number;
-  leagues: {
-    sideA: string[];
-    sideB: string[];
-  };
-  players: Array<{
-    name: string;
-    position: string;
-    adpA: number | null;
-    adpB: number | null;
-    delta: number | null;
-    roundPickA: string | null;
-    roundPickB: string | null;
-  }>;
-  draftboard: {
-    totalRounds: number;
-    rows: Array<{
-      round: number;
-      direction: 'L2R' | 'R2L';
-      picks: Array<{
-        slot: number;
-        overallPick: number;
-        name: string;
-        position: string;
-        adp: number;
-        roundPick: string;
-      } | null>;
-    }>;
-  };
-};
+type SortKey = 'name' | 'position' | 'adpA' | 'adpB' | 'delta' | 'roundPickA' | 'roundPickB';
 
 function slugifyFilename(s: string) {
   return String(s || '')
@@ -50,11 +20,6 @@ function slugifyFilename(s: string) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/(^-|-$)/g, '')
     .slice(0, 80);
-}
-
-function toNumOrNull(n: unknown): number | null {
-  const x = typeof n === 'number' ? n : Number(n);
-  return Number.isFinite(x) ? x : null;
 }
 
 function downloadJson(obj: unknown, filename: string) {
@@ -70,115 +35,42 @@ function downloadJson(obj: unknown, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-function toRoundPick(overallPick: number, leagueSize: number): string | null {
-  if (!Number.isFinite(overallPick) || overallPick <= 0) return null;
-  const size = Number.isFinite(leagueSize) && leagueSize > 0 ? leagueSize : 12;
-  const round = Math.floor((overallPick - 1) / size) + 1;
-  const slot = ((overallPick - 1) % size) + 1;
-  return `${round}.${String(slot).padStart(2, '0')}`;
+function fmtNum(n: number | null) {
+  return n == null || !Number.isFinite(n) ? '—' : n.toFixed(1);
 }
 
-function buildAdpExportV1(opts: {
-  title: string;
-  mode: 'compare' | 'full-a' | 'full-b';
-  leagueSize: number;
-  a: string[];
-  b: string[];
-  results: PlayerResult[];
-}): ADPExportV1 {
-  const { title, mode, leagueSize, a, b, results } = opts;
-  const createdAt = new Date().toISOString();
+// Parse "R.PP" or "R.PP.FF" into a numeric value so sorting works for rounds 10+.
+// Examples:
+// - "1.01" => 1001
+// - "10.01" => 10001
+// - "2.11.50" => 2011.5
+// We treat "—" / invalid as Infinity.
+function roundPickToSortValue(v: unknown): number {
+  const s = String(v ?? '').trim();
+  if (!s || s === '—') return Number.POSITIVE_INFINITY;
 
-  // List payload (full results, not filtered by UI)
-  const players = results
-    .slice()
-    .sort((x, y) => {
-      const ax = Number.isFinite(x.adpA as any) ? (x.adpA as number) : Infinity;
-      const ay = Number.isFinite(y.adpA as any) ? (y.adpA as number) : Infinity;
-      return ax - ay;
-    })
-    .map((r) => {
-      const adpA = toNumOrNull(r.adpA);
-      const adpB = toNumOrNull(r.adpB);
-      const delta = toNumOrNull(r.delta);
-      const pickA = adpA == null ? null : Math.round(adpA);
-      const pickB = adpB == null ? null : Math.round(adpB);
-      return {
-        name: r.name,
-        position: r.position,
-        adpA,
-        adpB,
-        delta,
-        roundPickA: pickA == null ? null : toRoundPick(pickA, leagueSize),
-        roundPickB: pickB == null ? null : toRoundPick(pickB, leagueSize),
-      };
-    });
+  // Expected: round.pick or round.pick.frac
+  const parts = s.split('.').map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return Number.POSITIVE_INFINITY;
 
-  // Draftboard payload (uses ADP A as the board-order)
-  const totalRounds = 18;
-  const totalPicks = totalRounds * leagueSize;
+  const round = Number(parts[0]);
+  const pick = Number(parts[1]);
+  if (!Number.isFinite(round) || !Number.isFinite(pick)) return Number.POSITIVE_INFINITY;
 
-    // Canonical board order: rank by ADP A (straight average) and assign sequential picks.
-  const boardOrdered = results
-    .filter((r) => Number.isFinite(r.adpA as any))
-    .slice()
-    .sort((x, y) => (x.adpA as number) - (y.adpA as number))
-    .slice(0, totalPicks)
-    .map((r, idx) => {
-      const overallPick = idx + 1; // <- sequential, no rounding collisions
-      const rp = toRoundPick(overallPick, leagueSize) || '';
-      return {
-        overallPick,
-        name: r.name,
-        position: r.position,
-        adp: r.adpA as number, // still store the true average for reference
-        roundPick: rp,
-      };
-    });
-
-
-  const rows: ADPExportV1['draftboard']['rows'] = [];
-  for (let round = 1; round <= totalRounds; round++) {
-    const direction: 'L2R' | 'R2L' = round % 2 === 1 ? 'L2R' : 'R2L';
-    const picks: Array<ADPExportV1['draftboard']['rows'][number]['picks'][number]> = [];
-
-    for (let slot = 1; slot <= leagueSize; slot++) {
-      const overallPick = (round - 1) * leagueSize + slot;
-      const found = boardOrdered[overallPick - 1];
-      if (!found) {
-        picks.push(null);
-        continue;
-      }
-      picks.push({
-        slot,
-        overallPick,
-        name: found.name,
-        position: found.position,
-        adp: found.adp,
-        roundPick: found.roundPick,
-      });
-    }
-
-    rows.push({ round, direction, picks });
+  let frac = 0;
+  if (parts.length >= 3) {
+    const ff = Number(parts[2]);
+    if (Number.isFinite(ff) && ff > 0) frac = ff / 100;
   }
 
-  return {
-    schemaVersion: 1,
-    createdAt,
-    title,
-    mode,
-    leagueSize,
-    leagues: { sideA: a, sideB: b },
-    players,
-    draftboard: { totalRounds, rows },
-  };
+  // round gets heavy weight; pick gets lighter weight, plus optional fractional hundredths.
+  return round * 1000 + pick + frac;
 }
 
 export default function ComparePage() {
   const searchParams = useSearchParams();
 
   function readIds(key: string) {
-    // supports: ?a=1&a=2  AND  ?a=1,2
     const raw = searchParams.getAll(key);
     return raw
       .flatMap((v) => String(v).split(','))
@@ -189,19 +81,15 @@ export default function ComparePage() {
   const a = readIds('a');
   const b = readIds('b');
 
-  const leagueSize = parseInt(searchParams.get('size') || '12', 10);
-
   const mode =
-    a.length > 0 && b.length > 0
-      ? 'compare'
-      : a.length > 0
-      ? 'full-a'
-      : b.length > 0
-      ? 'full-b'
-      : 'none';
+    a.length > 0 && b.length > 0 ? 'compare' : a.length > 0 ? 'full-a' : b.length > 0 ? 'full-b' : 'none';
 
   const [exportTitle, setExportTitle] = useState('');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>('');
+
+  const [groupA, setGroupA] = useState<ADPGroupData | null>(null);
+  const [groupB, setGroupB] = useState<ADPGroupData | null>(null);
   const [results, setResults] = useState<PlayerResult[]>([]);
 
   const [view, setView] = useState<View>('all');
@@ -212,9 +100,14 @@ export default function ComparePage() {
   const [search, setSearch] = useState<string>('');
   const [showBoard, setShowBoard] = useState(false);
 
-  const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const [openCell, setOpenCell] = useState<{
+    cellKey: string;
+    round: number;
+    slot: number;
+    entries: DraftboardCellEntry[];
+  } | null>(null);
 
-  // If user doesn't set a title, seed one from URL + mode.
+  // Seed title
   useEffect(() => {
     const fromQuery = (searchParams.get('title') || '').trim();
     if (fromQuery) {
@@ -223,76 +116,79 @@ export default function ComparePage() {
     }
     setExportTitle((prev) => {
       if (prev && prev.trim()) return prev;
-      const base =
-        mode === 'compare'
-          ? 'ADP Compare'
-          : mode === 'full-a'
-          ? 'ADP List (Side A)'
-          : mode === 'full-b'
-          ? 'ADP List (Side B)'
-          : 'ADP Export';
-      return base;
+      return mode === 'compare'
+        ? 'ADP Compare'
+        : mode === 'full-a'
+        ? 'ADP List (Side A)'
+        : mode === 'full-b'
+        ? 'ADP List (Side B)'
+        : 'ADP Export';
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
-  // When mode changes, reset view + default sorting appropriately
+  // Reset defaults when mode changes
   useEffect(() => {
     setView('all');
     if (mode === 'compare') {
       setSortKey('delta');
       setSortDir('desc');
-    } else if (mode === 'full-a' || mode === 'full-b') {
+    } else {
       setSortKey('adpA');
       setSortDir('asc');
     }
   }, [mode]);
 
+  // Load group data + compare results
   useEffect(() => {
     async function load() {
       setLoading(true);
+      setError('');
+      setGroupA(null);
+      setGroupB(null);
+      setResults([]);
+
       try {
-        const size = Number.isFinite(leagueSize) && leagueSize > 0 ? leagueSize : 12;
+        if (mode === 'none') return;
 
         if (mode === 'compare') {
-          const [mapA, mapB] = await Promise.all([getADPMap(a, size), getADPMap(b, size)]);
-          setResults(compareADPs(mapA, mapB));
+          const [ga, gb] = await Promise.all([getADPGroupData(a), getADPGroupData(b)]);
+
+          // Enforce meta compatibility
+          if (ga.meta.teams !== gb.meta.teams || ga.meta.rounds !== gb.meta.rounds) {
+            throw new Error(
+              `League settings mismatch between sides. Side A is ${ga.meta.teams} teams / ${ga.meta.rounds} rounds, Side B is ${gb.meta.teams} teams / ${gb.meta.rounds} rounds.`
+            );
+          }
+
+          setGroupA(ga);
+          setGroupB(gb);
+          setResults(compareADPs(ga.players, gb.players));
         } else if (mode === 'full-a') {
-          const mapA = await getADPMap(a, size);
-          setResults(compareADPs(mapA, {}));
+          const ga = await getADPGroupData(a);
+          setGroupA(ga);
+          setResults(compareADPs(ga.players, {}));
         } else if (mode === 'full-b') {
-          const mapB = await getADPMap(b, size);
-          setResults(compareADPs(mapB, {}));
-        } else {
-          setResults([]);
+          const gb = await getADPGroupData(b);
+          setGroupB(gb);
+          // treat as A for display simplicity (ADP A column)
+          setGroupA(gb);
+          setResults(compareADPs(gb.players, {}));
         }
+      } catch (e: any) {
+        setError(String(e?.message || e || 'Failed to load ADP.'));
       } finally {
         setLoading(false);
       }
     }
 
     load();
-  }, [a.join(','), b.join(','), mode, leagueSize]);
+  }, [a.join(','), b.join(','), mode]);
 
-  const handleDownloadJson = () => {
-    const title = exportTitle.trim() || 'ADP Compare';
-    const payload = buildAdpExportV1({
-      title,
-      mode: mode === 'compare' || mode === 'full-a' || mode === 'full-b' ? mode : 'compare',
-      leagueSize: Number.isFinite(leagueSize) && leagueSize > 0 ? leagueSize : 12,
-      a,
-      b,
-      results,
-    });
+  const meta = groupA?.meta || groupB?.meta || null;
 
-    const date = new Date().toISOString().slice(0, 10);
-    const slug = slugifyFilename(title) || 'adp';
-    const filename = `adp_${slug}_${date}.json`;
-    downloadJson(payload, filename);
-  };
-
-  const filtered = results
-    .filter((r) => {
+  const filtered = useMemo(() => {
+    const base = results.filter((r) => {
       if (posFilter !== 'ALL' && r.position !== posFilter) return false;
 
       if (search.trim()) {
@@ -300,85 +196,130 @@ export default function ComparePage() {
         if (!r.name.toLowerCase().includes(s)) return false;
       }
 
-      // Single-side = ALWAYS full list
+      // Single-side always full list
       if (mode !== 'compare') return true;
 
       // Compare-mode view filters
       if (view === 'all') return true;
-      if (view === 'risers') return r.delta > 0;
-      if (view === 'fallers') return r.delta < 0;
-      return r.delta === 0;
-    })
-    .sort((x, y) => {
-      const vX = (x as any)[sortKey];
-      const vY = (y as any)[sortKey];
-
-      if (typeof vX === 'string') {
-        const cmp = String(vX).localeCompare(String(vY));
-        return sortDir === 'asc' ? cmp : -cmp;
-      }
-
-      const nx = Number.isFinite(vX) ? vX : Infinity;
-      const ny = Number.isFinite(vY) ? vY : Infinity;
-
-      const cmp = nx - ny;
-      return sortDir === 'asc' ? cmp : -cmp;
+      if (view === 'risers') return (r.delta ?? 0) < 0; // A - B < 0 => picked earlier in B
+      if (view === 'fallers') return (r.delta ?? 0) > 0;
+      return (r.delta ?? 0) === 0;
     });
 
+    const dir = sortDir === 'asc' ? 1 : -1;
+
+    return base.slice().sort((x, y) => {
+      const vx: any = (x as any)[sortKey];
+      const vy: any = (y as any)[sortKey];
+
+      // Round.Pick sorting must be numeric (so 10.xx sorts after 9.xx)
+      if (sortKey === 'roundPickA' || sortKey === 'roundPickB') {
+        const ax = roundPickToSortValue(vx);
+        const ay = roundPickToSortValue(vy);
+        return (ax - ay) * dir;
+      }
+
+      if (typeof vx === 'string' || typeof vy === 'string') {
+        return String(vx ?? '').localeCompare(String(vy ?? '')) * dir;
+      }
+
+      const nx = Number.isFinite(vx) ? vx : Infinity;
+      const ny = Number.isFinite(vy) ? vy : Infinity;
+      return (nx - ny) * dir;
+    });
+  }, [results, posFilter, search, mode, view, sortKey, sortDir]);
+
+  const handleDownloadJson = () => {
+    const title = exportTitle.trim() || 'ADP Export';
+    const date = new Date().toISOString().slice(0, 10);
+    const slug = slugifyFilename(title) || 'adp';
+
+    const payload = {
+      schemaVersion: 1,
+      createdAt: new Date().toISOString(),
+      title,
+      mode,
+      meta,
+      leagues: { sideA: a, sideB: b },
+      // Export the FULL results (not UI-filtered)
+      players: results,
+      // Export draftboard from “A” group (single-side uses A too)
+      draftboard: groupA?.draftboard || null,
+    };
+
+    downloadJson(payload, `adp_${slug}_${date}.json`);
+  };
+
   const renderDraftBoard = () => {
-    const totalRounds = 18;
-    const totalPicks = totalRounds * leagueSize;
+    const g = groupA;
+    const m = g?.meta;
+    if (!g || !m) return null;
 
-    const sortedByPick = results
-      .filter((r) => Number.isFinite(r.adpA))
-      .slice()
-      .sort((x, y) => x.adpA - y.adpA)
-      .slice(0, totalPicks);
-
-    const rounds: PlayerResult[][] = [];
-    for (let i = 0; i < totalRounds; i++) {
-      const slice = sortedByPick.slice(i * leagueSize, (i + 1) * leagueSize);
-      rounds.push(slice);
-    }
+    const { teams, rounds } = m;
 
     return (
       <div className="mt-6 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-semibold">Draft Board</h2>
-          <button
-            className="text-sm px-3 py-1 rounded bg-gray-200 hover:bg-gray-300"
-            onClick={() => setShowBoard(false)}
-          >
+          <button className="text-sm px-3 py-1 rounded bg-gray-200 hover:bg-gray-300" onClick={() => setShowBoard(false)}>
             Back to list
           </button>
         </div>
 
         <div className="overflow-x-auto border rounded">
           <div className="min-w-[900px]">
-            {rounds.map((roundPlayers, roundIdx) => {
+            {Array.from({ length: rounds }).map((_, roundIdx) => {
               const roundNum = roundIdx + 1;
-              const snakeRight = roundNum % 2 === 0;
-
-              const ordered = snakeRight ? [...roundPlayers].reverse() : roundPlayers;
+              const direction: 'L2R' | 'R2L' = roundNum % 2 === 1 ? 'L2R' : 'R2L';
 
               return (
                 <div
                   key={roundIdx}
                   className="grid"
-                  style={{ gridTemplateColumns: `80px repeat(${leagueSize}, minmax(0, 1fr))` }}
+                  style={{ gridTemplateColumns: `80px repeat(${teams}, minmax(0, 1fr))` }}
                 >
-                  <div className="p-2 border-b border-r font-semibold bg-gray-50">R{roundNum}</div>
-                  {Array.from({ length: leagueSize }).map((_, i) => {
-                    const p = ordered[i];
+                  <div className="p-2 border-b border-r font-semibold bg-gray-50">
+                    R{roundNum}
+                  </div>
+
+                  {Array.from({ length: teams }).map((_, colIdx) => {
+                    const displaySlot = colIdx + 1;
+                    const actualSlot = direction === 'L2R' ? displaySlot : teams - displaySlot + 1;
+
+                    const cellKey = `${roundNum}-${actualSlot}`;
+                    const entries = g.draftboard.cells[cellKey] || [];
+                    const primary = entries[0];
+
+                    const handleOpen = () => {
+                      if (!entries.length) return;
+                      setOpenCell({ cellKey, round: roundNum, slot: actualSlot, entries });
+                    };
+
                     return (
-                      <div key={i} className="p-2 border-b border-r text-xs">
-                        {p ? (
+                      <div
+                        key={colIdx}
+                        role={entries.length ? 'button' : undefined}
+                        tabIndex={entries.length ? 0 : -1}
+                        onClick={handleOpen}
+                        onKeyDown={(e) => {
+                          if (!entries.length) return;
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            handleOpen();
+                          }
+                        }}
+                        className={`p-2 border-b border-r text-xs ${entries.length ? 'cursor-pointer hover:bg-gray-50' : ''}`}
+                      >
+                        {primary ? (
                           <>
-                            <div className="font-semibold truncate">{p.name}</div>
-                            <div className="text-gray-600">{p.position}</div>
+                            <div className="font-semibold truncate">{primary.name}</div>
+                            <div className="text-gray-600">{primary.position}</div>
                             <div className="text-gray-500">
-                              {toRoundPick(roundIdx * leagueSize + (snakeRight ? (leagueSize - i) : (i + 1)), leagueSize)}
+                              {primary.count}x ({Math.round(primary.pct * 100)}%)
                             </div>
+                            {entries.length > 1 ? (
+                              <div className="mt-1 text-[11px] text-gray-500">+{entries.length - 1} more</div>
+                            ) : null}
                           </>
                         ) : (
                           <div className="text-gray-300">—</div>
@@ -391,46 +332,103 @@ export default function ComparePage() {
             })}
           </div>
         </div>
+
+        <div className="text-xs text-gray-500">
+          Each square = that draft slot for that round. Because multiple leagues are aggregated, a square can contain multiple different players.
+        </div>
+
+        {openCell ? (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={() => setOpenCell(null)}
+          >
+            <div
+              className="w-full max-w-2xl rounded bg-white shadow-lg"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b px-4 py-3">
+                <div>
+                  <div className="text-sm font-semibold">Round {openCell.round} · Slot {openCell.slot}</div>
+                  <div className="text-xs text-gray-500">Cell key: {openCell.cellKey}</div>
+                </div>
+                <button
+                  className="text-sm px-3 py-1 rounded bg-gray-200 hover:bg-gray-300"
+                  onClick={() => setOpenCell(null)}
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="max-h-[70vh] overflow-auto p-4">
+                <div className="text-xs text-gray-500 mb-2">
+                  Sorted by most common in this slot.
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="min-w-full border text-sm">
+                    <thead>
+                      <tr className="bg-gray-100">
+                        <th className="p-2 border text-left">Player</th>
+                        <th className="p-2 border">Pos</th>
+                        <th className="p-2 border">Times</th>
+                        <th className="p-2 border">Share</th>
+                        <th className="p-2 border">Avg Pick #</th>
+                        <th className="p-2 border">Avg RP</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {openCell.entries.map((e, i) => (
+                        <tr key={`${e.name}-${e.position}-${i}`} className="odd:bg-white even:bg-gray-50">
+                          <td className="p-2 border font-semibold">{e.name}</td>
+                          <td className="p-2 border">{e.position}</td>
+                          <td className="p-2 border text-center">{e.count}</td>
+                          <td className="p-2 border text-center">{Math.round(e.pct * 100)}%</td>
+                          <td className="p-2 border text-center">{fmtNum(e.avgOverallPick)}</td>
+                          <td className="p-2 border text-center">{e.roundPick}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     );
   };
 
   if (loading) return <div className="p-6">Loading...</div>;
   if (mode === 'none') return <div className="p-6">Missing league IDs.</div>;
+  if (error) return <div className="p-6 text-red-600">{error}</div>;
 
   const titleText =
     mode === 'compare' ? 'ADP Compare' : mode === 'full-a' ? 'Side A ADP List' : 'Side B ADP List';
 
   return (
     <div className="p-6">
-      <h1 className="text-2xl font-bold mb-4">{titleText}</h1>
+      <h1 className="text-2xl font-bold mb-1">{titleText}</h1>
+
+      {meta ? (
+        <div className="text-xs text-gray-500 mb-4">
+          Detected: {meta.teams} teams • {meta.rounds} rounds
+        </div>
+      ) : null}
 
       <div className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between mb-4">
         <div className="flex gap-2">
           {mode === 'compare' ? (
             <>
-              <button
-                className={`px-3 py-1 rounded ${view === 'all' ? 'bg-blue-700 text-white' : 'bg-gray-200'}`}
-                onClick={() => setView('all')}
-              >
+              <button className={`px-3 py-1 rounded ${view === 'all' ? 'bg-blue-700 text-white' : 'bg-gray-200'}`} onClick={() => setView('all')}>
                 All
               </button>
-              <button
-                className={`px-3 py-1 rounded ${view === 'risers' ? 'bg-green-600 text-white' : 'bg-gray-200'}`}
-                onClick={() => setView('risers')}
-              >
+              <button className={`px-3 py-1 rounded ${view === 'risers' ? 'bg-green-600 text-white' : 'bg-gray-200'}`} onClick={() => setView('risers')}>
                 Risers
               </button>
-              <button
-                className={`px-3 py-1 rounded ${view === 'fallers' ? 'bg-red-600 text-white' : 'bg-gray-200'}`}
-                onClick={() => setView('fallers')}
-              >
+              <button className={`px-3 py-1 rounded ${view === 'fallers' ? 'bg-red-600 text-white' : 'bg-gray-200'}`} onClick={() => setView('fallers')}>
                 Fallers
               </button>
-              <button
-                className={`px-3 py-1 rounded ${view === 'unchanged' ? 'bg-gray-800 text-white' : 'bg-gray-200'}`}
-                onClick={() => setView('unchanged')}
-              >
+              <button className={`px-3 py-1 rounded ${view === 'unchanged' ? 'bg-gray-800 text-white' : 'bg-gray-200'}`} onClick={() => setView('unchanged')}>
                 Unchanged
               </button>
             </>
@@ -442,11 +440,7 @@ export default function ComparePage() {
         </div>
 
         <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-          <select
-            value={posFilter}
-            onChange={(e) => setPosFilter(e.target.value)}
-            className="border px-2 py-1 rounded text-sm"
-          >
+          <select value={posFilter} onChange={(e) => setPosFilter(e.target.value)} className="border px-2 py-1 rounded text-sm">
             <option value="ALL">All Positions</option>
             <option value="QB">QB</option>
             <option value="RB">RB</option>
@@ -456,12 +450,7 @@ export default function ComparePage() {
             <option value="DEF">DEF</option>
           </select>
 
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search name..."
-            className="border px-2 py-1 rounded text-sm"
-          />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name..." className="border px-2 py-1 rounded text-sm" />
 
           {mode !== 'compare' && (
             <button
@@ -493,86 +482,72 @@ export default function ComparePage() {
           Download JSON
         </button>
       </div>
-      <p className="text-xs text-gray-500 mt-1">
-        Exports one JSON that includes both the list-view results and the draftboard grid. File is named using your title + today’s date.
-      </p>
 
       {showBoard ? (
         renderDraftBoard()
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto mt-4">
           <table className="min-w-full border text-sm">
             <thead>
               <tr className="bg-gray-100">
-                <th
-                  className="p-2 border cursor-pointer"
-                  onClick={() => {
-                    setSortKey('name');
-                    setSortDir(sortKey === 'name' && sortDir === 'asc' ? 'desc' : 'asc');
-                  }}
-                >
+                <th className="p-2 border cursor-pointer" onClick={() => { setSortKey('name'); setSortDir(sortKey === 'name' && sortDir === 'asc' ? 'desc' : 'asc'); }}>
                   Name
                 </th>
-                <th
-                  className="p-2 border cursor-pointer"
-                  onClick={() => {
-                    setSortKey('position');
-                    setSortDir(sortKey === 'position' && sortDir === 'asc' ? 'desc' : 'asc');
-                  }}
-                >
+                <th className="p-2 border cursor-pointer" onClick={() => { setSortKey('position'); setSortDir(sortKey === 'position' && sortDir === 'asc' ? 'desc' : 'asc'); }}>
                   Pos
                 </th>
-                <th
-                  className="p-2 border cursor-pointer"
-                  onClick={() => {
-                    setSortKey('adpA');
-                    setSortDir(sortKey === 'adpA' && sortDir === 'asc' ? 'desc' : 'asc');
-                  }}
-                >
-                  ADP A
+
+                <th className="p-2 border cursor-pointer" onClick={() => { setSortKey('adpA'); setSortDir(sortKey === 'adpA' && sortDir === 'asc' ? 'desc' : 'asc'); }}>
+                  Avg Pick A
                 </th>
-                <th
-                  className="p-2 border cursor-pointer"
-                  onClick={() => {
-                    setSortKey('adpB');
-                    setSortDir(sortKey === 'adpB' && sortDir === 'asc' ? 'desc' : 'asc');
-                  }}
-                >
-                  ADP B
+                <th className="p-2 border cursor-pointer" onClick={() => { setSortKey('roundPickA'); setSortDir(sortKey === 'roundPickA' && sortDir === 'asc' ? 'desc' : 'asc'); }}>
+                  RP A (Most Common)
                 </th>
-                <th
-                  className="p-2 border cursor-pointer"
-                  onClick={() => {
-                    setSortKey('delta');
-                    setSortDir(sortKey === 'delta' && sortDir === 'asc' ? 'desc' : 'asc');
-                  }}
-                >
-                  Δ
+
+                <th className="p-2 border cursor-pointer" onClick={() => { setSortKey('adpB'); setSortDir(sortKey === 'adpB' && sortDir === 'asc' ? 'desc' : 'asc'); }}>
+                  Avg Pick B
+                </th>
+                <th className="p-2 border cursor-pointer" onClick={() => { setSortKey('roundPickB'); setSortDir(sortKey === 'roundPickB' && sortDir === 'asc' ? 'desc' : 'asc'); }}>
+                  RP B (Most Common)
+                </th>
+
+                <th className="p-2 border cursor-pointer" onClick={() => { setSortKey('delta'); setSortDir(sortKey === 'delta' && sortDir === 'asc' ? 'desc' : 'asc'); }}>
+                  Δ (A-B)
                 </th>
               </tr>
             </thead>
+
             <tbody>
               {filtered.map((r, idx) => (
                 <tr key={`${r.name}-${r.position}-${idx}`} className="odd:bg-white even:bg-gray-50">
                   <td className="p-2 border">{r.name}</td>
                   <td className="p-2 border">{r.position}</td>
-                  <td className="p-2 border">{Number.isFinite(r.adpA) ? r.adpA.toFixed(1) : '—'}</td>
-                  <td className="p-2 border">{Number.isFinite(r.adpB) ? r.adpB.toFixed(1) : '—'}</td>
-                  <td className={`p-2 border ${r.delta > 0 ? 'text-green-700' : r.delta < 0 ? 'text-red-700' : ''}`}>
-                    {Number.isFinite(r.delta) ? r.delta.toFixed(1) : '—'}
+
+                  <td className="p-2 border">{fmtNum(r.adpA)}</td>
+                  <td className="p-2 border">{r.roundPickA || '—'}</td>
+
+                  <td className="p-2 border">{fmtNum(r.adpB)}</td>
+                  <td className="p-2 border">{r.roundPickB || '—'}</td>
+
+                  <td className={`p-2 border ${(r.delta ?? 0) < 0 ? 'text-green-700' : (r.delta ?? 0) > 0 ? 'text-red-700' : ''}`}>
+                    {r.delta == null ? '—' : r.delta.toFixed(1)}
                   </td>
                 </tr>
               ))}
 
               {!filtered.length && (
                 <tr>
-                  <td className="p-3 border text-gray-500" colSpan={5}>
+                  <td className="p-3 border text-gray-500" colSpan={7}>
                     No results for current filters.
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
+
+          <div className="text-xs text-gray-500 mt-2">
+            “RP” is the <b>most common actual slot</b> the player was drafted at across the selected leagues (mode of pick_no), not the average.
+          </div>
         </div>
       )}
     </div>
