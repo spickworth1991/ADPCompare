@@ -1,23 +1,6 @@
 // lib/adpUtils.ts
 import { getLeaguePrimaryDraft, getDraftPicks, type DraftPick } from "@/lib/sleeper";
 
-
-// Limit concurrent network calls so we don't spam Sleeper when many leagues are selected.
-async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, idx: number) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  let i = 0;
-
-  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }).map(async () => {
-    while (i < items.length) {
-      const idx = i++;
-      out[idx] = await fn(items[idx], idx);
-    }
-  });
-
-  await Promise.all(workers);
-  return out;
-}
-
 export type PlayerADP = {
   name: string;
   position: string;
@@ -43,8 +26,21 @@ export type ADPGroupMeta = {
   rounds: number;
 };
 
+export type ADPLeagueData = {
+  leagueId: string;
+  draftId: string;
+  name: string; // draft metadata name (usually matches league name)
+  meta: ADPGroupMeta;
+  players: Record<string, PlayerADP>; // key is playerKey()
+  draftboard: {
+    // key `${round}-${slot}` where slot is 1..teams (draft slot)
+    cells: Record<string, DraftboardCellEntry[]>;
+  };
+};
+
 export type ADPGroupData = {
   meta: ADPGroupMeta;
+  leagues: ADPLeagueData[];
   players: Record<string, PlayerADP>; // key is playerKey()
   draftboard: {
     // key `${round}-${slot}` where slot is 1..teams (draft slot)
@@ -140,18 +136,19 @@ type CellAcc = {
 };
 
 export async function getADPGroupData(leagueIds: string[]): Promise<ADPGroupData> {
-  const ids = Array.from(new Set((leagueIds || []).map((s) => safeStr(s).trim()).filter(Boolean)));
+  const ids = (leagueIds || []).map((s) => safeStr(s).trim()).filter(Boolean);
 
   if (!ids.length) {
     return {
       meta: { teams: 12, rounds: 15 },
+      leagues: [],
       players: {},
       draftboard: { cells: {} },
     };
   }
 
   // 1) Resolve each league => primary draft meta (teams/rounds + draft_id)
-  const drafts = await mapLimit(ids, 8, (id) => getLeaguePrimaryDraft(id));
+  const drafts = await Promise.all(ids.map((id) => getLeaguePrimaryDraft(id)));
 
   const valid = drafts
     .map((d, idx) => ({ d, leagueId: ids[idx] }))
@@ -193,15 +190,87 @@ export async function getADPGroupData(leagueIds: string[]): Promise<ADPGroupData
 
   // 3) Pull picks for each draft_id
   const draftIds = valid.map((d) => safeStr(d.draft_id)).filter(Boolean);
-  const pickLists = await mapLimit(draftIds, 8, (draftId) => getDraftPicks(draftId));
+  const pickLists = await Promise.all(draftIds.map((draftId) => getDraftPicks(draftId)));
 
-  // 4) Aggregate player ADP across all picks + mode pick
+  // 4) Aggregate player ADP across ALL picks (all leagues) + mode pick
   const byPlayer = new Map<string, PlayerAcc>();
 
-  // 5) Aggregate draftboard cells: (round,slot) => player counts
+  // 5) Aggregate draftboard cells across ALL leagues: (round,slot) => player counts
   const cellToPlayers = new Map<string, Map<string, CellAcc>>();
 
-  for (const picks of pickLists) {
+  // 6) Also build per-league outputs so an exported JSON can be re-used offline
+  const leagues: ADPLeagueData[] = [];
+
+  function finalizePlayersMap(map: Map<string, PlayerAcc>, teams: number): Record<string, PlayerADP> {
+    const out: Record<string, PlayerADP> = {};
+    for (const [k, acc] of map.entries()) {
+      const avg = acc.sumPick / acc.count;
+
+      // mode pick_no (most common pick number). Tie-break: earlier pick wins.
+      let modePick = 0;
+      let modeCount = -1;
+      for (const [pickNo, c] of acc.pickCounts.entries()) {
+        if (c > modeCount || (c === modeCount && pickNo < modePick)) {
+          modePick = pickNo;
+          modeCount = c;
+        }
+      }
+      if (!modePick) modePick = Math.max(1, Math.round(avg));
+
+      out[k] = {
+        name: acc.name,
+        position: acc.pos,
+        count: acc.count,
+        avgOverallPick: avg,
+        avgRoundPick: formatRoundPickFromAvgOverall(avg, teams),
+        modeOverallPick: modePick,
+        modeRoundPick: formatRoundPickFromOverall(modePick, teams),
+      };
+    }
+    return out;
+  }
+
+  function finalizeCellsMap(
+    map: Map<string, Map<string, CellAcc>>,
+    teams: number
+  ): Record<string, DraftboardCellEntry[]> {
+    const out: Record<string, DraftboardCellEntry[]> = {};
+
+    for (const [cellKey, pmap] of map.entries()) {
+      const total = Array.from(pmap.values()).reduce((s, v) => s + v.count, 0) || 1;
+      out[cellKey] = Array.from(pmap.values())
+        .map((v) => {
+          const avgPick = v.sumPick / (v.count || 1);
+          return {
+            name: v.name,
+            position: v.pos,
+            count: v.count,
+            pct: v.count / total,
+            avgOverallPick: avgPick,
+            roundPick: formatRoundPickFromAvgOverall(avgPick, teams),
+          };
+        })
+        .sort((a, b) => {
+          if (b.count !== a.count) return b.count - a.count;
+          if (a.avgOverallPick !== b.avgOverallPick) return a.avgOverallPick - b.avgOverallPick;
+          return a.name.localeCompare(b.name);
+        });
+    }
+
+    return out;
+  }
+
+  for (let i = 0; i < pickLists.length; i++) {
+    const picks = pickLists[i] || [];
+    const draftMeta = valid[i];
+    const leagueId = safeStr((draftMeta as any)?._leagueId);
+    const draftId = safeStr(draftMeta?.draft_id);
+    const draftName = safeStr(draftMeta?.metadata?.name).trim();
+
+    // Per-league accs
+    const byPlayerOne = new Map<string, PlayerAcc>();
+    const cellToPlayersOne = new Map<string, Map<string, CellAcc>>();
+
     for (const p of picks) {
       const pickNo = safeNum(p.pick_no);
       const round = safeNum(p.round);
@@ -222,6 +291,16 @@ export async function getADPGroupData(leagueIds: string[]): Promise<ADPGroupData
       acc.count += 1;
       acc.pickCounts.set(pickNo, (acc.pickCounts.get(pickNo) || 0) + 1);
 
+      // per-league player acc
+      let acc1 = byPlayerOne.get(key);
+      if (!acc1) {
+        acc1 = { name, pos, sumPick: 0, count: 0, pickCounts: new Map() };
+        byPlayerOne.set(key, acc1);
+      }
+      acc1.sumPick += pickNo;
+      acc1.count += 1;
+      acc1.pickCounts.set(pickNo, (acc1.pickCounts.get(pickNo) || 0) + 1);
+
       // board cell acc
       const cellKey = `${round}-${slot}`;
       let cellMap = cellToPlayers.get(cellKey);
@@ -236,7 +315,30 @@ export async function getADPGroupData(leagueIds: string[]): Promise<ADPGroupData
       }
       cc.sumPick += pickNo;
       cc.count += 1;
+
+      // per-league board cell acc
+      let cellMap1 = cellToPlayersOne.get(cellKey);
+      if (!cellMap1) {
+        cellMap1 = new Map();
+        cellToPlayersOne.set(cellKey, cellMap1);
+      }
+      let cc1 = cellMap1.get(key);
+      if (!cc1) {
+        cc1 = { name, pos, sumPick: 0, count: 0 };
+        cellMap1.set(key, cc1);
+      }
+      cc1.sumPick += pickNo;
+      cc1.count += 1;
     }
+
+    leagues.push({
+      leagueId,
+      draftId,
+      name: draftName || leagueId || draftId,
+      meta,
+      players: finalizePlayersMap(byPlayerOne, meta.teams),
+      draftboard: { cells: finalizeCellsMap(cellToPlayersOne, meta.teams) },
+    });
   }
 
   const players: Record<string, PlayerADP> = {};
@@ -259,40 +361,16 @@ export async function getADPGroupData(leagueIds: string[]): Promise<ADPGroupData
       position: acc.pos,
       count: acc.count,
       avgOverallPick: avg,
-      // Derive Round.Pick from the rounded average overall pick so the RP column and avg pick stay aligned.
+      // Derive Round.Pick from the rounded average overall pick so Avg Pick and RP stay aligned.
       avgRoundPick: formatRoundPickFromAvgOverall(avg, meta.teams),
       modeOverallPick: modePick,
       modeRoundPick: formatRoundPickFromOverall(modePick, meta.teams),
     };
   }
 
-  const cells: Record<string, DraftboardCellEntry[]> = {};
-  for (const [cellKey, pmap] of cellToPlayers.entries()) {
-    const total = Array.from(pmap.values()).reduce((s, v) => s + v.count, 0) || 1;
+  const cells = finalizeCellsMap(cellToPlayers, meta.teams);
 
-    const arr: DraftboardCellEntry[] = Array.from(pmap.values())
-      .map((v) => {
-        const avgPick = v.sumPick / (v.count || 1);
-        return {
-          name: v.name,
-          position: v.pos,
-          count: v.count,
-          pct: v.count / total,
-          avgOverallPick: avgPick,
-          roundPick: formatRoundPickFromAvgOverall(avgPick, meta.teams),
-        };
-      })
-      .sort((a, b) => {
-        if (b.count !== a.count) return b.count - a.count;
-        // tie-break: earlier avg pick first
-        if (a.avgOverallPick !== b.avgOverallPick) return a.avgOverallPick - b.avgOverallPick;
-        return a.name.localeCompare(b.name);
-      });
-
-    cells[cellKey] = arr;
-  }
-
-  return { meta, players, draftboard: { cells } };
+  return { meta, leagues, players, draftboard: { cells } };
 }
 
 export function compareADPs(
