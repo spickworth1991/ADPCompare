@@ -96,6 +96,17 @@ export function formatRoundPickFromOverall(overallPick: number, teams: number): 
   return `${round}.${String(intPart).padStart(2, "0")}.${String(frac2).padStart(2, "0")}`;
 }
 
+/**
+ * UI-friendly Round.Pick derived from an average overall pick.
+ * We round to the nearest overall pick number before converting to Round.Pick,
+ * so the list's Avg Pick and Round.Pick stay aligned.
+ */
+export function formatRoundPickFromAvgOverall(avgOverallPick: number, teams: number): string {
+  const x = Number.isFinite(avgOverallPick) ? avgOverallPick : 0;
+  if (x <= 0) return "—";
+  return formatRoundPickFromOverall(Math.max(1, Math.round(x)), teams);
+}
+
 type PlayerAcc = {
   name: string;
   pos: string;
@@ -107,6 +118,7 @@ type PlayerAcc = {
 type CellAcc = {
   name: string;
   pos: string;
+  sumPick: number;
   count: number;
 };
 
@@ -202,9 +214,10 @@ export async function getADPGroupData(leagueIds: string[]): Promise<ADPGroupData
       }
       let cc = cellMap.get(key);
       if (!cc) {
-        cc = { name, pos, count: 0 };
+        cc = { name, pos, sumPick: 0, count: 0 };
         cellMap.set(key, cc);
       }
+      cc.sumPick += pickNo;
       cc.count += 1;
     }
   }
@@ -229,7 +242,8 @@ export async function getADPGroupData(leagueIds: string[]): Promise<ADPGroupData
       position: acc.pos,
       count: acc.count,
       avgOverallPick: avg,
-      avgRoundPick: formatRoundPickFromOverall(avg, meta.teams),
+      // Derive Round.Pick from the rounded average overall pick so the RP column and avg pick stay aligned.
+      avgRoundPick: formatRoundPickFromAvgOverall(avg, meta.teams),
       modeOverallPick: modePick,
       modeRoundPick: formatRoundPickFromOverall(modePick, meta.teams),
     };
@@ -240,17 +254,21 @@ export async function getADPGroupData(leagueIds: string[]): Promise<ADPGroupData
     const total = Array.from(pmap.values()).reduce((s, v) => s + v.count, 0) || 1;
 
     const arr: DraftboardCellEntry[] = Array.from(pmap.values())
-      .map((v) => ({
-        name: v.name,
-        position: v.pos,
-        count: v.count,
-        pct: v.count / total,
-        avgOverallPick: v.count / total,
-        roundPick: formatRoundPickFromOverall(v.count / total, meta.teams)
-      }))
+      .map((v) => {
+        const avgPick = v.sumPick / (v.count || 1);
+        return {
+          name: v.name,
+          position: v.pos,
+          count: v.count,
+          pct: v.count / total,
+          avgOverallPick: avgPick,
+          roundPick: formatRoundPickFromAvgOverall(avgPick, meta.teams),
+        };
+      })
       .sort((a, b) => {
         if (b.count !== a.count) return b.count - a.count;
-        // tie-break: higher pct first (same as count really), then name stable
+        // tie-break: earlier avg pick first
+        if (a.avgOverallPick !== b.avgOverallPick) return a.avgOverallPick - b.avgOverallPick;
         return a.name.localeCompare(b.name);
       });
 
@@ -289,9 +307,9 @@ export function compareADPs(
       adpA,
       adpB,
       delta,
-      // IMPORTANT: RoundPick = MODE slot (actual most-common taken spot)
-      roundPickA: a?.modeRoundPick || "—",
-      roundPickB: b?.modeRoundPick || "—",
+      // RoundPick is derived from the rounded average overall pick so the value stays aligned with avgOverallPick.
+      roundPickA: a?.avgRoundPick || "—",
+      roundPickB: b?.avgRoundPick || "—",
     });
   }
 
