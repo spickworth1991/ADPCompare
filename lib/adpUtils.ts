@@ -1,6 +1,23 @@
 // lib/adpUtils.ts
 import { getLeaguePrimaryDraft, getDraftPicks, type DraftPick } from "@/lib/sleeper";
 
+
+// Limit concurrent network calls so we don't spam Sleeper when many leagues are selected.
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, idx: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let i = 0;
+
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }).map(async () => {
+    while (i < items.length) {
+      const idx = i++;
+      out[idx] = await fn(items[idx], idx);
+    }
+  });
+
+  await Promise.all(workers);
+  return out;
+}
+
 export type PlayerADP = {
   name: string;
   position: string;
@@ -123,7 +140,7 @@ type CellAcc = {
 };
 
 export async function getADPGroupData(leagueIds: string[]): Promise<ADPGroupData> {
-  const ids = (leagueIds || []).map((s) => safeStr(s).trim()).filter(Boolean);
+  const ids = Array.from(new Set((leagueIds || []).map((s) => safeStr(s).trim()).filter(Boolean)));
 
   if (!ids.length) {
     return {
@@ -134,7 +151,7 @@ export async function getADPGroupData(leagueIds: string[]): Promise<ADPGroupData
   }
 
   // 1) Resolve each league => primary draft meta (teams/rounds + draft_id)
-  const drafts = await Promise.all(ids.map((id) => getLeaguePrimaryDraft(id)));
+  const drafts = await mapLimit(ids, 8, (id) => getLeaguePrimaryDraft(id));
 
   const valid = drafts
     .map((d, idx) => ({ d, leagueId: ids[idx] }))
@@ -176,7 +193,7 @@ export async function getADPGroupData(leagueIds: string[]): Promise<ADPGroupData
 
   // 3) Pull picks for each draft_id
   const draftIds = valid.map((d) => safeStr(d.draft_id)).filter(Boolean);
-  const pickLists = await Promise.all(draftIds.map((draftId) => getDraftPicks(draftId)));
+  const pickLists = await mapLimit(draftIds, 8, (draftId) => getDraftPicks(draftId));
 
   // 4) Aggregate player ADP across all picks + mode pick
   const byPlayer = new Map<string, PlayerAcc>();

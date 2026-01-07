@@ -47,6 +47,21 @@ const BASE = "https://api.sleeper.app/v1";
 
 type FetchJsonOpts = { timeoutMs?: number };
 
+// Simple in-memory cache for the current browser/server instance.
+// This significantly reduces repeated Sleeper calls when users navigate between pages.
+// NOTE: In serverless environments, this cache is best-effort.
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+type CacheEntry<T> = { ts: number; data: T };
+function isFresh(ts: number) {
+  return Date.now() - ts < CACHE_TTL_MS;
+}
+
+const leagueDraftsCache = new Map<string, CacheEntry<LeagueDraft[]>>();
+const leagueDraftsInflight = new Map<string, Promise<LeagueDraft[]>>();
+
+const draftPicksCache = new Map<string, CacheEntry<DraftPick[]>>();
+const draftPicksInflight = new Map<string, Promise<DraftPick[]>>();
 class SleeperHttpError extends Error {
   status: number;
   url: string;
@@ -103,16 +118,36 @@ export async function getUserLeagues(username: string, season: string) {
 export async function getLeagueDrafts(leagueId: string) {
   const id = String(leagueId || "").trim();
   if (!id) return [];
+
+  const cached = leagueDraftsCache.get(id);
+  if (cached && isFresh(cached.ts)) return cached.data;
+
+  const inflight = leagueDraftsInflight.get(id);
+  if (inflight) return inflight;
+
   const url = `${BASE}/league/${encodeURIComponent(id)}/drafts`;
 
-  // Some leagues have no draft yet (404) — treat as no drafts.
-  try {
-    return await fetchJson<LeagueDraft[]>(url);
-  } catch (e: any) {
-    if (e?.name === "SleeperHttpError" && e?.status === 404) return [];
-    throw e;
-  }
+  const p = (async () => {
+    // Some leagues have no draft yet (404) — treat as no drafts.
+    try {
+      const data = await fetchJson<LeagueDraft[]>(url);
+      leagueDraftsCache.set(id, { ts: Date.now(), data });
+      return data;
+    } catch (e: any) {
+      if (e?.name === "SleeperHttpError" && e?.status === 404) {
+        leagueDraftsCache.set(id, { ts: Date.now(), data: [] });
+        return [];
+      }
+      throw e;
+    } finally {
+      leagueDraftsInflight.delete(id);
+    }
+  })();
+
+  leagueDraftsInflight.set(id, p);
+  return p;
 }
+
 
 // Prefer completed drafts, otherwise newest/first
 export async function getLeaguePrimaryDraft(leagueId: string): Promise<LeagueDraft | null> {
@@ -129,12 +164,31 @@ export async function getDraftPicks(draftId: string) {
   const id = String(draftId || "").trim();
   if (!id) return [];
 
+  const cached = draftPicksCache.get(id);
+  if (cached && isFresh(cached.ts)) return cached.data;
+
+  const inflight = draftPicksInflight.get(id);
+  if (inflight) return inflight;
+
   const url = `${BASE}/draft/${encodeURIComponent(id)}/picks`;
 
-  try {
-    return await fetchJson<DraftPick[]>(url);
-  } catch (e: any) {
-    if (e?.name === "SleeperHttpError" && (e?.status === 404 || e?.status === 400)) return [];
-    throw e;
-  }
+  const p = (async () => {
+    try {
+      const data = await fetchJson<DraftPick[]>(url);
+      draftPicksCache.set(id, { ts: Date.now(), data });
+      return data;
+    } catch (e: any) {
+      if (e?.name === "SleeperHttpError" && (e?.status === 404 || e?.status === 400)) {
+        draftPicksCache.set(id, { ts: Date.now(), data: [] });
+        return [];
+      }
+      throw e;
+    } finally {
+      draftPicksInflight.delete(id);
+    }
+  })();
+
+  draftPicksInflight.set(id, p);
+  return p;
 }
+
