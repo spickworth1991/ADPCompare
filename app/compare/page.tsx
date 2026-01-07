@@ -235,16 +235,27 @@ export default function ComparePage() {
     const slug = slugifyFilename(title) || 'adp';
 
     const payload = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       createdAt: new Date().toISOString(),
       title,
       mode,
       meta,
       leagues: { sideA: a, sideB: b },
-      // Export the FULL results (not UI-filtered)
-      players: results,
-      // Export draftboard from “A” group (single-side uses A too)
-      draftboard: groupA?.draftboard || null,
+
+      // Aggregated (current-page) computed output
+      aggregated: {
+        sideA: groupA ? { meta: groupA.meta, players: groupA.players, draftboard: groupA.draftboard } : null,
+        sideB: groupB ? { meta: groupB.meta, players: groupB.players, draftboard: groupB.draftboard } : null,
+      },
+
+      // Per-league data (this is what makes the JSON reusable offline)
+      perLeague: {
+        sideA: groupA?.leagues || [],
+        sideB: groupB?.leagues || [],
+      },
+
+      // Full comparison/list results (not UI-filtered)
+      results,
     };
 
     downloadJson(payload, `adp_${slug}_${date}.json`);
